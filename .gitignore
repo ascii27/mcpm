@@ -66,6 +66,14 @@ yarn-error.log*
 /mcpm-registry/db/registry.db # Ignore the registry database file
 /mcpm-registry/uploads/ # Ignore uploaded packages
 
+# Registry Specific
+mcpm-registry/db/*.db
+mcpm-registry/uploads/
+
+# Python virtual environment
+.venv/
+venv/
+
 # OS generated files
 .DS_Store
 .DS_Store?

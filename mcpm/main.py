@@ -9,32 +9,53 @@ import re
 from pathlib import Path
 
 # --- Constants ---
-# Read registry URL from environment variable or use default
-DEFAULT_REGISTRY_URL = "http://localhost:8000/api" # Correct base URL
-REGISTRY_URL = os.environ.get("MCPM_REGISTRY_URL", DEFAULT_REGISTRY_URL).rstrip('/')
+# Default installation directory for packages
+INSTALL_DIR = Path("~/.mcpm/packages").expanduser()
+# Default registry URL (can be overridden by environment variable)
+DEFAULT_REGISTRY_URL = "http://localhost:8000/api" # Example default
+# Environment variable name for the registry URL
+REGISTRY_URL_ENV_VAR = "MCPM_REGISTRY_URL"
+# Environment variable for Windsurf config path override
+WINDSURF_CONFIG_ENV_VAR = "WINDSURF_MCP_CONFIG_PATH"
 
-# Configuration
-INSTALL_DIR = Path.home() / ".mcpm" / "packages"
+# --- Target Tool Configuration ---
+DEFAULT_TARGET_CONFIG_PATHS = {
+    "windsurf": Path("~/.codeium/windsurf/mcp_config.json"),
+    # Add other tools here if needed
+    # "claude-desktop": Path("~/.config/claude/mcp_servers.json"),
+}
 
-# Ensure installation directory exists
-INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+def get_target_config_path(target_tool):
+    """Gets the configuration file path for a target tool."""
+    if target_tool == "windsurf":
+        # Check environment variable override first
+        override_path = os.getenv(WINDSURF_CONFIG_ENV_VAR)
+        if override_path:
+            return Path(override_path).expanduser()
+    # Use default path from mapping
+    path = DEFAULT_TARGET_CONFIG_PATHS.get(target_tool)
+    return path.expanduser() if path else None
 
-# --- Helper Functions (Stubs/Placeholders) ---
+# --- Helper functions (get_registry_url, get_registry_server, etc. - Keep existing) ---
+def get_registry_url():
+    """Gets the registry URL from environment variable or uses default."""
+    return os.environ.get(REGISTRY_URL_ENV_VAR, DEFAULT_REGISTRY_URL)
 
+# Helper function to fetch all packages
 def get_registry_packages():
     """Fetches the list of available packages (latest versions) from the registry."""
-    packages_url = f"{REGISTRY_URL}/packages/" # Append specific path
+    packages_url = f"{get_registry_url()}/packages/" # Append specific path
     try:
         response = requests.get(packages_url)
         response.raise_for_status() # Raise an exception for bad status codes
         return response.json() # Assuming the registry returns JSON list of packages
     except requests.exceptions.RequestException as e:
-        click.echo(f"Error connecting to registry at {REGISTRY_URL}: {e}", err=True)
+        click.echo(f"Error connecting to registry at {get_registry_url()}: {e}", err=True)
         return None
 
 def get_registry_servers():
     """Fetches the list of all registered servers from the registry."""
-    servers_url = f"{REGISTRY_URL}/servers" # Append specific path
+    servers_url = f"{get_registry_url()}/servers" # Append specific path
     try:
         response = requests.get(servers_url)
         response.raise_for_status()
@@ -48,7 +69,7 @@ def get_registry_servers():
 
 def get_registry_server(server_registry_name):
     """Fetches server details by registry_name from the registry."""
-    registry_url = REGISTRY_URL
+    registry_url = get_registry_url()
     if not registry_url:
         return None  # Error already handled by caller typically
 
@@ -75,7 +96,7 @@ def get_registry_server(server_registry_name):
 def download_package(package_name, version="latest"):
     """Downloads a specific package version from the registry."""
     # TODO: Implement version handling
-    download_url = f"{REGISTRY_URL}/packages/{package_name}/{version}/download" # Append specific path
+    download_url = f"{get_registry_url()}/packages/{package_name}/{version}/download" # Append specific path
     click.echo(f"Downloading {package_name} ({version}) from {download_url}...")
     try:
         response = requests.get(download_url, stream=True)
@@ -160,6 +181,96 @@ def create_package_archive(output_filename, source_dir='.'):
             os.remove(output_filename)
         return False
 
+# --- JSON Update Logic (MODIFIED) ---
+def update_mcp_config_file(config_path: Path, server_registry_name: str, server_config_str: str):
+    """Reads, updates, and writes the target MCP JSON configuration file.
+
+    Args:
+        config_path: Path to the target JSON file (e.g., windsurf mcp_config.json).
+        server_registry_name: The unique name used in the registry (e.g., 'my-calculator-server').
+            This is currently NOT used as the key in the target file.
+        server_config_str: The JSON string fetched from the registry's 'config_command' field.
+            Expected format: '{"mcpServers": {"<short_name>": { ... server config ...}}}'.
+    """
+    try:
+        # --- Parse the incoming server config first ---
+        try:
+            registry_config = json.loads(server_config_str)
+            if not isinstance(registry_config, dict) or 'mcpServers' not in registry_config or not isinstance(registry_config['mcpServers'], dict) or len(registry_config['mcpServers']) != 1:
+                raise ValueError("Registry config_command must be a JSON object containing exactly one key under 'mcpServers'.")
+            
+            # Extract the short name and the actual config object
+            mcp_servers_dict = registry_config['mcpServers']
+            server_short_name = next(iter(mcp_servers_dict)) # Get the first (and only) key
+            server_actual_config = mcp_servers_dict[server_short_name]
+            
+            if not isinstance(server_actual_config, dict):
+                 raise ValueError(f"The configuration for '{server_short_name}' within 'mcpServers' must be a JSON object.")
+
+        except json.JSONDecodeError as e:
+            click.echo(f"Error: Could not parse the server configuration received from the registry: {e}", err=True)
+            click.echo(f"--- Raw config string from registry for '{server_registry_name}' ---")
+            click.echo(server_config_str)
+            click.echo("----------------------------------------------------------")
+            return False
+        except (ValueError, TypeError, KeyError, StopIteration) as e:
+            click.echo(f"Error: Invalid structure in the server configuration received from the registry: {e}", err=True)
+            click.echo(f"Expected structure: {{\"mcpServers\": {{\"<server_short_name>\": {{...}} }} }}")
+            click.echo(f"--- Raw config string from registry for '{server_registry_name}' ---")
+            click.echo(server_config_str)
+            click.echo("----------------------------------------------------------")
+            return False
+
+        # --- Read existing target file data ---
+        # Ensure parent directory exists
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        if config_path.exists() and config_path.stat().st_size > 0:
+            with open(config_path, 'r') as f:
+                try:
+                    data = json.load(f)
+                    if not isinstance(data, dict): # Handle non-dict JSON
+                        click.echo(f"Warning: Existing config file {config_path} does not contain a JSON object. Initializing structure.", err=True)
+                        data = {}
+                except json.JSONDecodeError:
+                    click.echo(f"Warning: Could not parse existing config file {config_path}. Backing up and creating new.", err=True)
+                    backup_path = config_path.with_suffix('.json.bak')
+                    try:
+                        shutil.copyfile(config_path, backup_path)
+                        click.echo(f"Backed up existing config to {backup_path}")
+                    except Exception as backup_e:
+                        click.echo(f"Warning: Failed to back up existing config file: {backup_e}", err=True)
+                    data = {}
+
+        # Ensure 'mcpServers' key exists in the target data
+        if 'mcpServers' not in data or not isinstance(data.get('mcpServers'), dict):
+            click.echo(f"Initializing 'mcpServers' object in {config_path}.")
+            data['mcpServers'] = {}
+
+        # --- Update the target data --- 
+        # Use the extracted short name and config object
+        target_key = server_short_name
+        click.echo(f"Adding/Updating configuration for server '{target_key}' in {config_path}...")
+        data['mcpServers'][target_key] = server_actual_config
+
+        # --- Write updated data back to file ---
+        with open(config_path, 'w') as f:
+            json.dump(data, f, indent=2) # Use indent=2 for pretty printing
+            f.write('\n') # Add trailing newline for POSIX compatibility
+
+        click.echo(f"Successfully updated {config_path} for server '{target_key}'.")
+        return True
+
+    except IOError as e:
+        click.echo(f"Error writing to config file {config_path}: {e}", err=True)
+        return False
+    except Exception as e:
+        # Log the full exception for debugging unexpected errors
+        import traceback
+        click.echo(f"An unexpected error occurred while updating {config_path}:", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        return False
+
 # --- CLI Commands ---
 
 @click.group()
@@ -218,9 +329,10 @@ def list_items():
 
 @cli.command()
 @click.argument('package_name') # This name can be a package name or a server registry_name
-def install(package_name):
-    """Installs a package or configures a registered server."""
-    registry_url = REGISTRY_URL
+@click.option('--target', default=None, help='Target tool to add server configuration to (e.g., "windsurf").')
+def install(package_name, target):
+    """Installs a package or configures a registered server (optionally adding config to a target tool)."""
+    registry_url = get_registry_url()
     if not registry_url:
         click.echo("Error: MCPM_REGISTRY_URL is not set.", err=True)
         sys.exit(1)
@@ -235,26 +347,53 @@ def install(package_name):
         config_command_str = server_info.get('config_command')
         if not config_command_str:
             click.echo(f"Warning: Server '{package_name}' is registered but has no configuration command defined.", err=True)
-            return # Or proceed to package install? Decide behavior. For now, stop.
+            # Decide if we should still attempt target update? Probably not.
+            sys.exit(1) # Exit if no config command
 
-        click.echo("\nConfiguration command:")
-        click.echo("-" * 20)
-        # Try to pretty-print if it looks like JSON
+        # Try to parse the server config string into JSON upfront
         try:
-            config_data = json.loads(config_command_str)
-            pretty_json = json.dumps(config_data, indent=2)
-            click.echo(pretty_json)
+            server_config_json = json.loads(config_command_str)
+            if not isinstance(server_config_json, dict):
+                 click.echo(f"Error: Configuration for server '{package_name}' is not a valid JSON object.", err=True)
+                 sys.exit(1)
         except json.JSONDecodeError:
-            # Not JSON, print as plain text
-             click.echo(config_command_str)
+            click.echo(f"Error: Configuration for server '{package_name}' is not valid JSON.", err=True)
+            # Print the raw string for manual inspection if desired
+            click.echo("\nRaw configuration string:")
+            click.echo("-" * 20)
+            click.echo(config_command_str)
+            click.echo("-" * 20)
+            sys.exit(1)
+
+        # --- Target Tool Integration ---
+        if target:
+            target_path = get_target_config_path(target)
+            if target_path:
+                click.echo(f"Attempting to add configuration to target '{target}' at {target_path}...")
+                if not update_mcp_config_file(target_path, package_name, server_info.get('config_command')):
+                     # Error message already printed by update_mcp_config_file
+                     click.echo("Failed to automatically update target configuration file.", err=True)
+                     # Optionally print config anyway?
+                # Regardless of success/failure of update, we are done with server install
+                return
+            else:
+                click.echo(f"Warning: Unknown target tool '{target}'. No configuration file path defined.", err=True)
+                # Fall through to printing config instead
+
+        # --- Default Behavior: Print Config ---
+        click.echo("\nServer configuration retrieved. Add this to your target tool's MCP config:")
         click.echo("-" * 20)
-        click.echo(f"\nTo configure this server, integrate the above command into your relevant configuration (e.g., ~/.codeium/windsurf/mcp_config.json).")
+        # We already parsed it, so dump the parsed version prettily
+        pretty_json = json.dumps(server_config_json, indent=2)
+        click.echo(pretty_json)
+        click.echo("-" * 20)
+        # Add hint about --target
+        click.echo(f"\nHint: Use `mcpm install {package_name} --target <tool_name>` (e.g., --target windsurf) to attempt automatic configuration.")
         return # Successfully handled as a server
 
-    # 2. If not a server, attempt to install as a package
+    # 2. If not a server, attempt to install as a package (Keep existing package install logic)
     click.echo(f"'{package_name}' not found as a registered server. Attempting to install as a package...")
-
-    package_dir = os.path.expanduser(str(INSTALL_DIR))
+    package_dir = INSTALL_DIR # Use the expanded path constant
     os.makedirs(package_dir, exist_ok=True)
     download_url = f"{registry_url}/packages/{package_name}/latest/download" # Use 'latest' for now
 
@@ -313,6 +452,33 @@ def install(package_name):
             os.remove(tmp_package_path) # Clean up partial download
         click.echo(f"Failed to find or download package '{package_name}'.") # More specific message
         sys.exit(1)
+
+    # If target tool specified, try to update its config
+    if target:
+        target_path = get_target_config_path(target)
+        if target_path:
+            click.echo(f"Attempting to add configuration to target '{target}' at {target_path}...")
+            # Use the server_config field from package details
+            package_details_url = f"{registry_url}/packages/{package_name}/latest/details" # Append specific path
+            try:
+                response = requests.get(package_details_url)
+                response.raise_for_status() # Raise an exception for bad status codes
+                package_details = response.json() # Assuming the registry returns JSON
+                server_config_str = package_details.get('server_config')
+                if server_config_str:
+                    if not update_mcp_config_file(target_path, package_name, server_config_str): # Use the correct variable
+                        # Error message already printed by update_mcp_config_file
+                        click.echo("Failed to automatically update target configuration file.", err=True)
+                        # Decide if failure here should stop the whole install?
+                        # For now, it continues with package installation.
+                else:
+                    click.echo(f"Package '{package_name}' does not include server configuration ('server_config' field missing or empty in registry data). Skipping target update.")
+            except requests.exceptions.RequestException as e:
+                click.echo(f"Error fetching package details for {package_name}: {e}", err=True)
+                click.echo("Skipping target configuration update.")
+            except json.JSONDecodeError:
+                click.echo(f"Error: Package details for {package_name} are not valid JSON.", err=True)
+                click.echo("Skipping target configuration update.")
 
 @cli.command(name='uninstall')
 @click.argument('package_name')
@@ -387,7 +553,7 @@ def publish(package_file):
         click.echo(f"Error reading {metadata_path.name}: {e}", err=True)
         return
 
-    publish_url = f"{REGISTRY_URL}/packages/publish" # Append specific path
+    publish_url = f"{get_registry_url()}/packages/publish" # Append specific path
     click.echo(f"Uploading to {publish_url}...")
 
     try:
