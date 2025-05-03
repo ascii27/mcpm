@@ -1,0 +1,83 @@
+body {
+    font-family: sans-serif;
+    line-height: 1.6;
+    margin: 20px;
+    background-color: #f4f4f4;
+}
+
+h1, h2 {
+    color: #333;
+    border-bottom: 1px solid #ccc;
+    padding-bottom: 5px;
+}
+
+section {
+    background: #fff;
+    padding: 20px;
+    margin-bottom: 20px;
+    border-radius: 5px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+#package-list {
+    list-style: none;
+    padding: 0;
+}
+
+#package-list li {
+    border-bottom: 1px dotted #eee;
+    padding: 8px 0;
+}
+
+#package-list li:last-child {
+    border-bottom: none;
+}
+
+form label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: bold;
+}
+
+form input[type="file"],
+form textarea {
+    width: 95%; /* Slightly less than 100% to avoid overflow */
+    padding: 8px;
+    margin-bottom: 10px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+}
+
+form textarea {
+    font-family: monospace;
+}
+
+form button {
+    padding: 10px 15px;
+    background-color: #5cb85c;
+    color: white;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+form button:hover {
+    background-color: #4cae4c;
+}
+
+.error {
+    color: red;
+    font-weight: bold;
+}
+
+#publish-status-message {
+    color: green;
+    font-weight: bold;
+}
+
+#list-loading-message {
+    font-style: italic;
+    color: #666;
+}
+
+

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcpm"
+version = "0.1.0"
+description = "A package manager for Model Context Protocol (MCP) servers."
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License", # Assuming MIT, change if needed
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "click>=8.0",
+    "requests>=2.20" # For registry interaction
+]
+
+[project.scripts]
+mcpm = "mcpm.main:cli"
+
+[project.urls]
+"Homepage" = "https://github.com/your-username/mcpm" # Replace with actual URL later
+"Bug Tracker" = "https://github.com/your-username/mcpm/issues" # Replace with actual URL later

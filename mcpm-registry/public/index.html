@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCPM Registry</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>MCPM Package Registry</h1>
+
+    <section id="package-list-section">
+        <h2>Available Packages (Latest Versions)</h2>
+        <ul id="package-list"></ul>
+        <p id="list-loading-message">Loading packages...</p>
+        <p id="list-error-message" class="error"></p>
+    </section>
+
+    <hr>
+
+    <section id="publish-section">
+        <h2>Publish New Package</h2>
+        <form id="publish-form">
+            <label for="package-file">Package File (.zip):</label><br>
+            <input type="file" id="package-file" name="package" accept=".zip" required><br><br>
+
+            <label for="metadata">Metadata (mcp_package.json content):</label><br>
+            <textarea id="metadata" name="metadata" rows="10" cols="50" required placeholder='{
+  "name": "package-name",
+  "version": "0.1.0",
+  "description": "...",
+  "entrypoint": "...",
+  "author": "...",
+  "license": "..."
+}'></textarea><br><br>
+
+            <button type="submit">Publish Package</button>
+        </form>
+        <p id="publish-status-message"></p>
+        <p id="publish-error-message" class="error"></p>
+    </section>
+
+    <hr>
+
+    <section id="register-server-section">
+        <h2>Register New MCP Server</h2>
+        <form id="register-server-form">
+            <label for="server-name">Server Name:</label><br>
+            <input type="text" id="server-name" name="name" required><br><br>
+
+            <label for="server-github-url">GitHub URL (optional):</label><br>
+            <input type="url" id="server-github-url" name="github_url" placeholder="https://github.com/user/repo"><br><br>
+
+            <label for="server-language">Language:</label><br>
+            <select id="server-language" name="language">
+                <option value=""> (Select or leave empty)</option>
+                <option value="Python">Python</option>
+                <option value="Go">Go</option>
+                <option value="Typescript">Typescript</option>
+                <option value="Other">Other</option>
+            </select><br><br>
+
+            <label for="server-config-command">Configuration Command (JSON, optional - defaults if empty):</label><br>
+            <textarea id="server-config-command" name="config_command" rows="10" cols="70" placeholder='Defaults to a standard structure if left empty. E.g.,\n{\n  "mcpServers": {\n    "your-server-name": {\n      "command": "...",\n      "args": [...]\n    }\n  }\n}'></textarea><br><br>
+
+            <button type="submit">Register Server</button>
+        </form>
+        <p id="register-status-message"></p>
+        <p id="register-error-message" class="error"></p>
+    </section>
+
+    <hr>
+
+    <section id="server-list-section">
+        <h2>Registered Servers</h2>
+        <table id="server-list-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>GitHub URL</th>
+                    <th>Language</th>
+                    <th>Config Command</th>
+                    <th>Registered</th>
+                </tr>
+            </thead>
+            <tbody id="server-list">
+                <!-- Server rows will be added here by script.js -->
+            </tbody>
+        </table>
+        <p id="server-list-loading-message">Loading servers...</p>
+        <p id="server-list-error-message" class="error"></p>
+    </section>
+
+    <script src="script.js"></script>
+</body>
+</html>

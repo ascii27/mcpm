@@ -1,0 +1,8 @@
+{
+  "name": "my-example-mcp-server",
+  "version": "0.1.0",
+  "description": "An example MCP server package.",
+  "entrypoint": "server.py",
+  "author": "Your Name <your.email@example.com>",
+  "license": "MIT"
+}
