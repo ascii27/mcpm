@@ -3,7 +3,8 @@ const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
+const fs = require('fs'); // Import the core fs module for sync operations
+const fsPromises = require('fs').promises; // Import promises API separately
 const cors = require('cors');
 
 const app = express();
@@ -11,7 +12,8 @@ const port = process.env.PORT || 8000; // Default port 8000
 
 // --- Configuration ---
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
-const DB_PATH = path.join(__dirname, 'db', 'registry.db');
+const DB_DIR = path.join(__dirname, 'db');
+const DB_PATH = path.join(DB_DIR, 'registry.db');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 // Default config command for new servers
@@ -25,9 +27,9 @@ const DEFAULT_CONFIG_COMMAND = JSON.stringify({
     }
   }, null, 2); // Pretty print JSON with 2 spaces
 
-// Ensure upload directory exists
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true }); // Ensure db dir exists
+// Ensure upload and db directories exist
+fs.mkdirSync(UPLOAD_DIR, { recursive: true }); // This should now work
+fs.mkdirSync(DB_DIR, { recursive: true });
 
 // --- Database Setup ---
 const db = new sqlite3.Database(DB_PATH, (err) => {
@@ -56,24 +58,36 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
                 }
             });
 
-            // Create servers table if it doesn't exist
-            db.run(`CREATE TABLE IF NOT EXISTS servers (
+            // Servers table (MODIFIED SCHEMA)
+            db.run(`DROP TABLE IF EXISTS servers`); // Drop for schema change during dev
+            db.run(`CREATE TABLE servers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                registry_name TEXT NOT NULL UNIQUE, -- Generated, unique name for lookup
                 github_url TEXT,
                 language TEXT,
                 config_command TEXT,
                 registration_time DATETIME DEFAULT CURRENT_TIMESTAMP
-            )`, (err) => {
-                if (err) {
-                    console.error("Error creating servers table", err.message);
-                } else {
-                    console.log("Servers table ready.");
-                }
+            )`, (createErr) => {
+                if (createErr) {
+                     console.error("Error creating servers table:", createErr.message);
+                 } else {
+                    console.log("Servers table created or already exists.");
+                 }
             });
         });
     }
 });
+
+// --- Helper ---
+function generateRegistryName(displayName) {
+    if (!displayName) return '';
+    // Lowercase, replace spaces with hyphens, remove other problematic chars (basic example)
+    return displayName
+        .toLowerCase()
+        .replace(/\s+/g, '-') // Replace spaces with hyphens
+        .replace(/[^a-z0-9\-]/g, ''); // Remove non-alphanumeric/non-hyphen chars
+}
 
 // --- Middleware ---
 app.use(cors()); // Enable CORS for all origins (adjust for production)
@@ -136,7 +150,7 @@ app.post('/api/packages/publish', upload.single('package'), (req, res) => {
     }
     if (!req.body.metadata) {
         // Cleanup uploaded file if metadata is missing
-        fs.unlink(req.file.path, (err) => {
+        fsPromises.unlink(req.file.path).catch((err) => {
             if (err) console.error("Error removing orphaned upload:", err.message);
         });
         return res.status(400).json({ error: "Missing package metadata." });
@@ -146,7 +160,7 @@ app.post('/api/packages/publish', upload.single('package'), (req, res) => {
     try {
         metadata = JSON.parse(req.body.metadata);
     } catch (e) {
-        fs.unlink(req.file.path, (err) => {
+        fsPromises.unlink(req.file.path).catch((err) => {
             if (err) console.error("Error removing orphaned upload:", err.message);
         });
         return res.status(400).json({ error: "Invalid metadata JSON.", details: e.message });
@@ -155,7 +169,7 @@ app.post('/api/packages/publish', upload.single('package'), (req, res) => {
     // Validate required metadata fields
     const { name, version, description, entrypoint, author, license } = metadata;
     if (!name || !version) {
-        fs.unlink(req.file.path, (err) => {
+        fsPromises.unlink(req.file.path).catch((err) => {
             if (err) console.error("Error removing orphaned upload:", err.message);
         });
         return res.status(400).json({ error: "Metadata must include 'name' and 'version'." });
@@ -169,8 +183,8 @@ app.post('/api/packages/publish', upload.single('package'), (req, res) => {
 
     db.run(sql, params, function(err) { // Use function() to access this.lastID
         if (err) {
-            fs.unlink(req.file.path, (unlinkErr) => { // Cleanup file on DB error
-                if (unlinkErr) console.error("Error removing upload after DB fail:", unlinkErr.message);
+            fsPromises.unlink(req.file.path).catch((err) => {
+                if (err) console.error("Error removing upload after DB fail:", err.message);
             });
             if (err.message.includes('UNIQUE constraint failed')) {
                 console.error(`Publish error: Package ${name} version ${version} already exists.`);
@@ -207,18 +221,16 @@ app.get('/api/packages/:name/:version/download', (req, res) => {
             const filePath = path.join(UPLOAD_DIR, filename);
 
             // Check if file exists before sending
-            fs.access(filePath, fs.constants.R_OK, (err) => {
-                if (err) {
-                    console.error(`File not found or unreadable: ${filePath}`, err);
-                    return res.status(404).json({ error: `Package file for ${packageName} version ${packageVersion} not found on server.` });
-                }
-
+            fsPromises.access(filePath, fs.constants.R_OK).catch((err) => {
+                console.error(`File not found or unreadable: ${filePath}`, err);
+                return res.status(404).json({ error: `Package file for ${packageName} version ${packageVersion} not found on server.` });
+            }).then(() => {
                 // Set headers for file download
                 res.setHeader('Content-Disposition', `attachment; filename="${packageName}-${packageVersion}.zip"`);
                 res.setHeader('Content-Type', 'application/zip');
 
                 // Stream the file
-                const fileStream = fs.createReadStream(filePath);
+                const fileStream = fsPromises.createReadStream(filePath);
                 fileStream.pipe(res);
 
                 fileStream.on('error', (streamErr) => {
@@ -228,9 +240,9 @@ app.get('/api/packages/:name/:version/download', (req, res) => {
                     }
                 });
 
-                 fileStream.on('close', () => {
+                fileStream.on('close', () => {
                     console.log(`Sent file ${filePath} for ${packageName} v${packageVersion}`);
-                 });
+                });
             });
         });
     };
@@ -264,10 +276,9 @@ app.get('/api/packages/:name/:version/download', (req, res) => {
 
 // GET /api/servers - List all registered servers
 app.get('/api/servers', (req, res) => {
-    const sql = "SELECT id, name, github_url, language, config_command, registration_time FROM servers ORDER BY name ASC";
-    db.all(sql, [], (err, rows) => {
+    db.all("SELECT id, display_name, registry_name, github_url, language, config_command, registration_time FROM servers ORDER BY display_name", [], (err, rows) => {
         if (err) {
-            console.error("Error fetching servers:", err.message);
+            console.error("Database error fetching servers:", err.message);
             res.status(500).json({ error: "Internal server error", details: err.message });
         } else {
             res.json(rows);
@@ -275,48 +286,124 @@ app.get('/api/servers', (req, res) => {
     });
 });
 
-// POST /api/servers - Register a new server
-app.post('/api/servers', (req, res) => {
+// POST /api/servers - Register a new server (MODIFIED: Generate registry_name)
+app.post('/api/servers', express.json(), (req, res) => {
     const { name, github_url, language, config_command } = req.body;
 
     if (!name) {
-        return res.status(400).json({ error: "Server 'name' is required." });
-    }
-    // Basic validation for language if provided
-    const allowedLanguages = ['Python', 'Go', 'Typescript', 'Other', null, undefined, '']; // Allow empty/null or specific values
-    if (!allowedLanguages.includes(language)) {
-         return res.status(400).json({ error: `Invalid language specified. Allowed: ${allowedLanguages.filter(l => l).join(', ')} or leave empty.` });
+        return res.status(400).json({ message: 'Server display name is required' });
     }
 
-    // Use provided config or default if empty/missing
-    const final_config_command = (config_command && config_command.trim() !== '')
-        ? config_command
-        : DEFAULT_CONFIG_COMMAND.replace("{server_name}", name); // Insert name into default
+    const displayName = name; // Keep original input as display name
+    const registryName = generateRegistryName(displayName); // Generate the registry name
 
-    const sql = `INSERT INTO servers (name, github_url, language, config_command)
-                 VALUES (?, ?, ?, ?)`;
-    const params = [name, github_url, language, final_config_command];
+    if (!registryName) {
+         return res.status(400).json({ message: 'Could not generate a valid registry name from the display name' });
+    }
+
+    const configCmd = config_command || DEFAULT_CONFIG_COMMAND.replace("{server_name}", name); // Use default if not provided
+
+    const sql = `INSERT INTO servers (display_name, registry_name, github_url, language, config_command) VALUES (?, ?, ?, ?, ?)`;
+    const params = [displayName, registryName, github_url, language, configCmd];
 
     db.run(sql, params, function(err) {
         if (err) {
-            if (err.message.includes('UNIQUE constraint failed')) {
-                console.error(`Registration error: Server name '${name}' already exists.`);
-                res.status(409).json({ error: `Server name '${name}' already exists.`, details: err.message });
-            } else {
-                console.error("Error inserting server registration:", err.message);
-                res.status(500).json({ error: "Failed to save server registration.", details: err.message });
-            }
-        } else {
-            console.log(`Server '${name}' registered successfully. ID: ${this.lastID}`);
-            res.status(201).json({
-                message: "Server registered successfully.",
-                serverId: this.lastID,
-                name: name,
-                github_url: github_url,
-                language: language,
-                config_command: final_config_command // Return the actual config used
-            });
+             if (err.message.includes('UNIQUE constraint failed: servers.registry_name')) {
+                 console.error(`Registration error: Registry name '${registryName}' already exists.`);
+                 return res.status(409).json({ message: `A server with the registry name '${registryName}' (generated from '${displayName}') already exists. Please choose a different display name.` });
+             }
+            console.error("Database error registering server:", err.message);
+            return res.status(500).json({ message: 'Error registering server', error: err.message });
         }
+        console.log(`Registered server: ${displayName} (Registry: ${registryName}) with ID: ${this.lastID}`);
+        res.status(201).json({
+            message: 'Server registered successfully',
+            id: this.lastID,
+            display_name: displayName,
+            registry_name: registryName // Return generated name too
+        });
+    });
+});
+
+// DELETE /api/servers/:registry_name - Delete a registered server (MODIFIED: Use registry_name)
+app.delete('/api/servers/:registry_name', (req, res) => {
+    const registryNameToDelete = req.params.registry_name;
+    db.run(`DELETE FROM servers WHERE registry_name = ?`, [registryNameToDelete], function(err) {
+        if (err) {
+            console.error("Database error deleting server:", err.message);
+            return res.status(500).json({ message: 'Error deleting server from database', error: err.message });
+        }
+        if (this.changes === 0) {
+             // Maybe it was display name? Check for confusion? For now, just 404.
+            return res.status(404).json({ message: `Server with registry name '${registryNameToDelete}' not found` });
+        }
+        console.log(`Deleted server with registry name: ${registryNameToDelete}`);
+        res.status(200).json({ message: `Server with registry name '${registryNameToDelete}' deleted successfully` });
+    });
+});
+
+// --- DELETE Endpoints ---
+
+// Delete a package (all versions) and its files
+app.delete('/api/packages/:name', async (req, res) => {
+    const nameToDelete = req.params.name;
+    console.log(`Attempting to delete package: ${nameToDelete}`);
+
+    // 1. Find all package entries and filenames for this name
+    db.all(`SELECT filename FROM packages WHERE name = ?`, [nameToDelete], async (err, rows) => {
+        if (err) {
+            console.error("Database error finding package files:", err.message);
+            return res.status(500).json({ message: 'Error finding package files', error: err.message });
+        }
+
+        if (rows.length === 0) {
+            return res.status(404).json({ message: `Package '${nameToDelete}' not found` });
+        }
+
+        const filenames = rows.map(row => row.filename);
+        console.log(`Found filenames to delete:`, filenames);
+
+        // 2. Delete associated files from uploads directory
+        const deleteFilePromises = filenames.map(filename => {
+            const filePath = path.join(UPLOAD_DIR, filename);
+            console.log(`Attempting to delete file: ${filePath}`);
+            return fsPromises.unlink(filePath).catch(fileErr => {
+                 // Log error but continue trying to delete others/DB entry
+                 console.error(`Error deleting file ${filePath}:`, fileErr.message);
+                 // If file not found, it might have been deleted already, which is okay
+                 if (fileErr.code !== 'ENOENT') {
+                    throw fileErr; // Re-throw other errors
+                 }
+            });
+        });
+
+        try {
+            await Promise.all(deleteFilePromises);
+            console.log(`Successfully deleted associated files (or they were already gone).`);
+        } catch (fileErr) {
+             // If any critical file deletion error occurred (other than ENOENT)
+             console.error("Critical error during file deletion:", fileErr.message);
+             // Decide if you want to stop or proceed with DB deletion
+             // Proceeding: return res.status(500).json({ message: 'Error deleting package files', error: fileErr.message });
+        }
+
+
+        // 3. Delete package entries from the database
+        db.run(`DELETE FROM packages WHERE name = ?`, [nameToDelete], function(dbErr) {
+            if (dbErr) {
+                console.error("Database error deleting package entries:", dbErr.message);
+                // File deletion might have partially succeeded, this is tricky state
+                return res.status(500).json({ message: 'Error deleting package from database after attempting file removal', error: dbErr.message });
+            }
+            console.log(`Deleted ${this.changes} package entries for '${nameToDelete}' from database.`);
+             if (this.changes === 0) {
+                 // This case should theoretically not happen if rows were found earlier, but good practice
+                 console.warn(`Inconsistency: Found package rows earlier but deleted 0 rows for ${nameToDelete}`);
+                 return res.status(404).json({ message: `Package '${nameToDelete}' found initially but couldn't delete from DB` });
+             }
+
+            res.status(200).json({ message: `Package '${nameToDelete}' and its associated files deleted successfully` });
+        });
     });
 });
 

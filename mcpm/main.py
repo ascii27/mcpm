@@ -4,6 +4,8 @@ import requests
 import zipfile
 import json
 import shutil
+import sys
+import re
 from pathlib import Path
 
 # --- Constants ---
@@ -44,14 +46,31 @@ def get_registry_servers():
         click.echo("Error: Could not decode server list response from registry.", err=True)
         return None
 
-def get_registry_server(server_name):
-    """Fetches a specific server registration from the registry."""
-    servers = get_registry_servers() # Can reuse the all-servers fetch
-    if servers:
+def get_registry_server(server_registry_name):
+    """Fetches server details by registry_name from the registry."""
+    registry_url = REGISTRY_URL
+    if not registry_url:
+        return None  # Error already handled by caller typically
+
+    try:
+        server_list_url = f"{registry_url}/servers"
+        response = requests.get(server_list_url)
+        response.raise_for_status()
+        servers = response.json()
         for server in servers:
-            if server.get('name') == server_name:
-                return server # Return the dictionary for the found server
-    return None # Return None if fetch failed or server not found
+            # IMPORTANT: Compare against 'registry_name'
+            if server.get('registry_name') == server_registry_name:
+                return server # Return the full server details dict
+        return None # Not found
+    except requests.exceptions.RequestException as e:
+        click.echo(f"Error contacting registry to check for server '{server_registry_name}': {e}", err=True)
+        return None
+    except json.JSONDecodeError:
+        click.echo(f"Error decoding server list response when checking for '{server_registry_name}'.", err=True)
+        return None
+    except KeyError:
+         click.echo(f"Error: Missing expected key ('registry_name'?) in server response when checking for '{server_registry_name}'.", err=True)
+         return None
 
 def download_package(package_name, version="latest"):
     """Downloads a specific package version from the registry."""
@@ -148,79 +167,152 @@ def cli():
     """Model Context Protocol Manager (MCPM)"""
     pass
 
-@cli.command()
-def list():
-    """List available packages and registered servers in the registry."""
+@cli.command("list", help="List registered packages and servers.")
+def list_items():
+    """Fetches and lists both packages and servers from the registry."""
     click.echo("Fetching data from registry...")
+
+    all_items = []
 
     # Fetch Servers
     servers = get_registry_servers()
-    click.echo("\n--- Registered Servers ---")
-    if servers is None:
-        click.echo("Could not retrieve server list.")
-    elif not servers:
-        click.echo("No servers registered.")
-    else:
+    if servers:
         for server in servers:
-            name = server.get('name', 'Unknown')
-            lang = server.get('language', 'N/A')
-            url = server.get('github_url', '')
-            click.echo(f"- {name} (Language: {lang}) {f'[{url}]' if url else ''}")
+            all_items.append({
+                'type': 'Server',
+                'display_name': server.get('display_name', 'Unknown Server'), # The user-friendly name
+                'registry_name': server.get('registry_name', 'N/A'), # The name used for install
+                'language': server.get('language', 'N/A')
+            })
+    elif servers is None: # Handle fetch error
+         click.echo("Warning: Could not retrieve server list.", err=True)
 
     # Fetch Packages
     packages = get_registry_packages()
-    click.echo("\n--- Available Packages (Latest Versions) ---")
-    if packages is None:
-        click.echo("Could not retrieve package list.")
-    elif not packages:
-        click.echo("No packages published.")
-    else:
-        # Assuming packages is a list of dicts with a 'name' key
+    if packages:
         for pkg in packages:
-            # Adjust based on actual registry API response format
-            name = pkg.get('name', 'Unknown')
-            version = pkg.get('latest_version', 'N/A')
-            description = pkg.get('description', '')
-            click.echo(f"- {name} (v{version}): {description}")
+             all_items.append({
+                'type': 'Package',
+                'name': pkg.get('name', 'Unknown Package'),
+                'version': pkg.get('version', 'N/A')
+            })
+    elif packages is None: # Handle fetch error
+        click.echo("Warning: Could not retrieve package list.", err=True)
+
+    # Sort combined list primarily by type, then by name/display_name
+    all_items.sort(key=lambda x: (x['type'], x.get('name', x.get('display_name', ''))))
+
+    click.echo(f"{'Type':<10} {'Display Name':<30} {'Install Name / Version':<30} {'Details':<20}")
+    click.echo("-" * 90)
+
+    for item in all_items:
+        if item['type'] == 'Package':
+            name = item.get('name', 'N/A')
+            version = item.get('version', 'N/A')
+            click.echo(f"{item['type']:<10} {name:<30} {version:<30}")
+        elif item['type'] == 'Server':
+            display_name = item.get('display_name', 'N/A')
+            registry_name = item.get('registry_name', 'N/A') # This is the install name
+            language = item.get('language', 'N/A')
+            click.echo(f"{item['type']:<10} {display_name:<30} {registry_name:<30} (Lang: {language})")
 
 @cli.command()
-@click.argument('package_name')
-# @click.option('--version', default='latest', help='Specify package version.') # Add later
+@click.argument('package_name') # This name can be a package name or a server registry_name
 def install(package_name):
-    """Install an MCP server package or display registered server config."""
+    """Installs a package or configures a registered server."""
+    registry_url = REGISTRY_URL
+    if not registry_url:
+        click.echo("Error: MCPM_REGISTRY_URL is not set.", err=True)
+        sys.exit(1)
+
     click.echo(f"Checking registry for server or package: {package_name}...")
 
-    # 1. Check if it's a registered server
-    server_info = get_registry_server(package_name)
+    # 1. Check if it's a registered server (using registry_name)
+    server_info = get_registry_server(package_name) # Pass the name directly
     if server_info:
-        click.echo(f"Found registered server entry: {package_name}")
-        click.echo("Configuration command:")
-        # Pretty print the config if it's valid JSON, otherwise print raw
-        config_command = server_info.get('config_command')
-        try:
-            # Attempt to parse and pretty-print JSON
-            config_json = json.loads(config_command)
-            click.echo(json.dumps(config_json, indent=2))
-        except (json.JSONDecodeError, TypeError):
-            # If not valid JSON or None, print as is
-            click.echo(config_command if config_command else "(No config command provided)")
-        return # Exit after printing config
+        click.echo(f"Found registered server '{package_name}' (Display: {server_info.get('display_name', 'N/A')}).")
+        # Output the configuration command associated with the server
+        config_command_str = server_info.get('config_command')
+        if not config_command_str:
+            click.echo(f"Warning: Server '{package_name}' is registered but has no configuration command defined.", err=True)
+            return # Or proceed to package install? Decide behavior. For now, stop.
 
-    # 2. If not a server, try installing as a package (existing logic)
-    click.echo(f"'{package_name}' not found as a registered server. Attempting to install as a package...")
-    version = "latest" # Assuming 'latest' for now
-    zip_path = download_package(package_name, version)
-    if zip_path:
-        install_package_from_zip(zip_path, package_name)
-        # Clean up the downloaded zip file after successful installation
+        click.echo("\nConfiguration command:")
+        click.echo("-" * 20)
+        # Try to pretty-print if it looks like JSON
         try:
-            os.remove(zip_path)
-            click.echo(f"Cleaned up temporary file: {zip_path}")
-        except OSError as e:
-            click.echo(f"Warning: Could not remove temporary file {zip_path}: {e}", err=True)
-    else:
-        # download_package already prints errors if download fails or package not found
-        click.echo(f"Failed to find or download package '{package_name}'.", err=True)
+            config_data = json.loads(config_command_str)
+            pretty_json = json.dumps(config_data, indent=2)
+            click.echo(pretty_json)
+        except json.JSONDecodeError:
+            # Not JSON, print as plain text
+             click.echo(config_command_str)
+        click.echo("-" * 20)
+        click.echo(f"\nTo configure this server, integrate the above command into your relevant configuration (e.g., ~/.codeium/windsurf/mcp_config.json).")
+        return # Successfully handled as a server
+
+    # 2. If not a server, attempt to install as a package
+    click.echo(f"'{package_name}' not found as a registered server. Attempting to install as a package...")
+
+    package_dir = os.path.expanduser(str(INSTALL_DIR))
+    os.makedirs(package_dir, exist_ok=True)
+    download_url = f"{registry_url}/packages/{package_name}/latest/download" # Use 'latest' for now
+
+    click.echo(f"Downloading {package_name} (latest) from {download_url}...")
+
+    try:
+        response = requests.get(download_url, stream=True)
+        response.raise_for_status() # Check for 4xx/5xx errors
+
+        # Extract filename from Content-Disposition header if possible, otherwise guess
+        content_disposition = response.headers.get('content-disposition')
+        filename = f"{package_name}.zip" # Default filename
+        if content_disposition:
+            filenames = re.findall('filename="(.+)"', content_disposition)
+            if filenames:
+                filename = filenames[0]
+
+        package_path = os.path.join(package_dir, filename)
+        tmp_package_path = package_path + ".tmp"
+
+        with open(tmp_package_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        # Atomic rename after successful download
+        os.rename(tmp_package_path, package_path)
+
+        click.echo(f"Successfully downloaded {filename}.")
+
+        # Unzip the package
+        install_path = os.path.join(package_dir, package_name) # Install into a sub-folder named after the package
+        click.echo(f"Extracting package to {install_path}...")
+
+        try:
+             # Ensure the target directory exists and is empty
+             if os.path.exists(install_path):
+                 shutil.rmtree(install_path) # Remove existing directory first
+             os.makedirs(install_path, exist_ok=True)
+
+             with zipfile.ZipFile(package_path, 'r') as zip_ref:
+                 zip_ref.extractall(install_path)
+             click.echo(f"Successfully installed '{package_name}' to {install_path}")
+             # Optionally remove the zip file after extraction
+             # os.remove(package_path)
+        except zipfile.BadZipFile:
+             click.echo(f"Error: Downloaded file '{filename}' is not a valid zip file.", err=True)
+             os.remove(package_path) # Clean up invalid download
+             sys.exit(1)
+        except Exception as e:
+             click.echo(f"Error extracting package: {e}", err=True)
+             sys.exit(1)
+
+    except requests.exceptions.RequestException as e:
+        click.echo(f"Error downloading package {package_name}: {e}", err=True)
+        if os.path.exists(tmp_package_path):
+            os.remove(tmp_package_path) # Clean up partial download
+        click.echo(f"Failed to find or download package '{package_name}'.") # More specific message
+        sys.exit(1)
 
 @cli.command(name='uninstall')
 @click.argument('package_name')

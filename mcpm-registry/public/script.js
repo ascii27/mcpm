@@ -26,6 +26,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const API_PACKAGE_BASE_URL = '/api/packages'; // Renamed for clarity
     const API_SERVER_BASE_URL = '/api/servers'; // New base URL for servers
 
+    // Get the config command textarea
+    const configCommandTextarea = document.getElementById('server-config-command'); // Corrected ID
+
+    // Set the placeholder with newline characters, matching server default
+    if (configCommandTextarea) {
+         // Match the default structure from server.js, but use placeholder text
+         configCommandTextarea.placeholder = '{\n  "mcpServers": {\n    "github": {\n      "command": "npx",\n      "args": [\n        "-y",\n        "@modelcontextprotocol/server-github"\n      ],\n    }\n  }\n}';
+    }
+
     // --- Package Functions (Existing - Renamed base URL variable) ---
     async function fetchAndDisplayPackages() {
         listLoadingMsg.style.display = 'block';
@@ -46,7 +55,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 packages.forEach(pkg => {
                     const li = document.createElement('li');
                     // Basic display - could add download links later
-                    li.textContent = `${pkg.name} (v${pkg.latest_version || 'N/A'}) - ${pkg.description || 'No description'}`;
+                    li.innerHTML = `
+                        <strong>${pkg.name}</strong> (v${pkg.latest_version || 'N/A'}) - ${pkg.description || 'No description'}
+                        <button class="delete-package-btn" data-name="${pkg.name}">Delete</button>
+                    `; // Added Delete Button
                     packageListEl.appendChild(li);
                 });
             }
@@ -139,7 +151,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const tr = document.createElement('tr');
 
                     const nameTd = document.createElement('td');
-                    nameTd.textContent = server.name;
+                    nameTd.innerHTML = `<strong>${server.display_name}</strong> [${server.registry_name}]`;
                     tr.appendChild(nameTd);
 
                     const urlTd = document.createElement('td');
@@ -167,6 +179,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     const timeTd = document.createElement('td');
                     timeTd.textContent = server.registration_time ? new Date(server.registration_time).toLocaleString() : 'N/A';
                     tr.appendChild(timeTd);
+
+                    const deleteTd = document.createElement('td');
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.textContent = 'Delete';
+                    deleteBtn.classList.add('delete-server-btn');
+                    deleteBtn.setAttribute('data-name', server.registry_name);
+                    deleteTd.appendChild(deleteBtn);
+                    tr.appendChild(deleteTd);
 
                     serverListEl.appendChild(tr);
                 });
@@ -226,11 +246,74 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // --- Delete Functions ---
+
+    async function deleteServer(serverRegistryName) { 
+        if (!confirm(`Are you sure you want to delete the server with registry name '${serverRegistryName}'? This cannot be undone.`)) {
+            return;
+        }
+        try {
+            const response = await fetch(`${API_SERVER_BASE_URL}/${serverRegistryName}`, { 
+                method: 'DELETE',
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.message || `Failed to delete server (HTTP ${response.status})`);
+            }
+            alert(result.message); // Show success message
+            fetchAndDisplayServers(); // Refresh the list
+        } catch (error) {
+            console.error('Error deleting server:', error);
+            alert(`Error deleting server: ${error.message}`);
+        }
+    }
+
+    async function deletePackage(packageName) {
+        if (!confirm(`Are you sure you want to delete the package '${packageName}' and all its versions/files? This cannot be undone.`)) {
+            return;
+        }
+        try {
+            const response = await fetch(`${API_PACKAGE_BASE_URL}/${packageName}`, {
+                method: 'DELETE',
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.message || `Failed to delete package (HTTP ${response.status})`);
+            }
+            alert(result.message); // Show success message
+            fetchAndDisplayPackages(); // Refresh the list
+        } catch (error) {
+            console.error('Error deleting package:', error);
+            alert(`Error deleting package: ${error.message}`);
+        }
+    }
+
     // --- Attach Event Listeners ---
     publishForm.addEventListener('submit', handlePublishSubmit);
     registerServerForm.addEventListener('submit', handleRegisterServerSubmit); // New listener
+
+    // Add event listeners for delete buttons using event delegation
+    serverListEl.addEventListener('click', (event) => {
+        if (event.target.classList.contains('delete-server-btn')) {
+            const serverName = event.target.getAttribute('data-name');
+            if (serverName) {
+                deleteServer(serverName);
+            }
+        }
+    });
+
+    packageListEl.addEventListener('click', (event) => {
+        if (event.target.classList.contains('delete-package-btn')) {
+            const packageName = event.target.getAttribute('data-name');
+            if (packageName) {
+                deletePackage(packageName);
+            }
+        }
+    });
 
     // --- Initial Data Load ---
     fetchAndDisplayPackages();
     fetchAndDisplayServers(); // New initial load
 });
+
+// --- Utility Functions ---
