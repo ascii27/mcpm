@@ -48,6 +48,53 @@ To publish a package to the MCPM registry, you need to create a zip file contain
    - `install_steps` (array, optional): List of install steps to run after installation. Each step should be an object with `type` (currently only `shell` is supported) and `command`.
    - `uninstall_steps` (array, optional): List of uninstall steps to run when the package is removed. Each step should be an object with `type` (currently only `shell` is supported) and `command`.
    - `ide_config_commands` (object, optional): IDE integration commands. Each key is an IDE name (e.g., `vscode`, `pycharm`), and the value is a command block with `command` and `args` fields. Used for automatic IDE configuration when installing with `--target <ide>`.
+   - `install_inputs` (array, optional): List of user-supplied values (such as tokens, secrets, or config variables) needed during installation. Each input is an object with:
+     - `name` (string): The variable name to reference in steps/configs (e.g., `GITHUB_PERSONAL_ACCESS_TOKEN`).
+     - `prompt` (string): The prompt shown to the user during installation.
+     - `type` (string, optional): The type of input (default: `string`).
+     - `secret` (boolean, optional): If true, input is hidden (for passwords/tokens).
+
+**You can reference these variables in your `install_steps` and `ide_config_commands` using `${VAR_NAME}`. The installer will prompt the user for each value and substitute it into commands/configs.**
+
+#### Example `mcp_package.json` with install_inputs
+
+```json
+{
+  "name": "my-github-mcp-server",
+  "version": "0.1.0",
+  "description": "A GitHub MCP server that requires a personal access token.",
+  "entrypoint": "server.py",
+  "author": "Your Name <your.email@example.com>",
+  "license": "MIT",
+  "install_inputs": [
+    {
+      "name": "GITHUB_PERSONAL_ACCESS_TOKEN",
+      "prompt": "Enter your GitHub Personal Access Token",
+      "type": "string",
+      "secret": true
+    }
+  ],
+  "install_steps": [
+    { "type": "shell", "command": "docker run -e GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN} ghcr.io/github/github-mcp-server" }
+  ],
+  "uninstall_steps": [
+    { "type": "shell", "command": "echo 'Uninstall complete'" }
+  ],
+  "ide_config_commands": {
+    "windsurf": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+#### Example `mcp_package.json`
 
 #### Example `mcp_package.json`
 

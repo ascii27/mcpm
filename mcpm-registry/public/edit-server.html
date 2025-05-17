@@ -7,58 +7,11 @@
     <link rel="stylesheet" href="style.css"> </head>
 <body>
     <h1>Edit MCP Server</h1>
-
     <nav>
         <a href="/">Back to Registry Home</a>
     </nav>
-
-    <div id="edit-server-form-container">
-        <form id="edit-server-form">
-            <input type="hidden" id="server-id" name="id">
-            <p>
-                <label for="registry-name">Registry Name:</label>
-                <input type="text" id="registry-name" name="registry_name" readonly disabled>
-                <small>(Cannot be changed)</small>
-            </p>
-            <p>
-                <label for="display-name">Display Name:</label>
-                <input type="text" id="display-name" name="display_name" required>
-            </p>
-            <p>
-                <label for="github-url">GitHub URL:</label>
-                <input type="url" id="github-url" name="github_url">
-            </p>
-            <p>
-                <label for="language">Language:</label>
-                <input type="text" id="language" name="language">
-            </p>
-            <p>
-                <label for="config-command">Config Command (JSON):</label>
-                <textarea id="config-command" name="config_command" rows="10" required></textarea>
-                 <small>Must be valid JSON defining the server's mcpServers entry.</small>
-            </p>
-            <button type="submit">Update Server</button>
-        </form>
-        <div id="message-area"></div>
+    <div>
+        <p>Server editing is no longer available in this registry. Please contact the administrator if you have questions.</p>
     </div>
-
-    <!-- We'll add logic to script.js later to handle this page -->
-    <script src="script.js"></script> 
-    <script>
-        // Simple script to fetch data when the page loads
-        document.addEventListener('DOMContentLoaded', () => {
-            // Assumes server ID is passed as a URL query parameter, e.g., edit-server.html?id=5
-            const urlParams = new URLSearchParams(window.location.search);
-            const serverId = urlParams.get('id');
-
-            if (serverId) {
-                // Call a function (defined in script.js) to load server data
-                loadServerForEditing(serverId);
-            } else {
-                document.getElementById('message-area').textContent = 'Error: No server ID provided.';
-                document.getElementById('edit-server-form').style.display = 'none';
-            }
-        });
-    </script>
 </body>
 </html>

@@ -114,34 +114,43 @@ def download_package(package_name, version="latest"):
         return None
 
 def install_package_from_zip(zip_path, package_name):
-    """Installs a package from a downloaded zip file."""
+    """Installs a package from a downloaded zip file, supporting install_inputs for user config."""
     target_install_path = INSTALL_DIR / package_name
     try:
         if target_install_path.exists():
-            # Handle upgrades/reinstalls more gracefully
             click.echo(f"Package {package_name} already exists. Removing existing version.")
-            shutil.rmtree(target_install_path) # Use shutil to remove existing directory
+            shutil.rmtree(target_install_path)
 
         click.echo(f"Installing {package_name} to {target_install_path}...")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(target_install_path)
 
-        # Clean up the temporary zip file
         os.remove(zip_path)
         click.echo(f"Successfully installed {package_name}.")
 
-        # --- NEW: Run install_steps from mcp_package.json if present ---
+        # --- Support install_inputs for user config ---
         metadata_path = target_install_path / "mcp_package.json"
+        install_inputs_values = {}
         if metadata_path.exists():
             try:
                 with open(metadata_path, "r") as f:
                     metadata = json.load(f)
+                install_inputs = metadata.get("install_inputs", [])
+                for input_spec in install_inputs:
+                    prompt_text = input_spec.get("prompt") or f"Enter value for {input_spec['name']}"
+                    input_type = input_spec.get("type", "string")
+                    is_secret = input_spec.get("secret", False)
+                    value = click.prompt(prompt_text, hide_input=is_secret, type=str if input_type == "string" else None)
+                    install_inputs_values[input_spec["name"]] = value
                 install_steps = metadata.get("install_steps", [])
                 if install_steps:
                     click.echo(f"Running install steps for {package_name}...")
                     for idx, step in enumerate(install_steps, 1):
                         if step.get("type") == "shell" and "command" in step:
                             command = step["command"]
+                            # Substitute variables in the command
+                            for var, val in install_inputs_values.items():
+                                command = command.replace(f"${{{var}}}", val)
                             click.echo(f"Step {idx}: {command}")
                             if click.confirm(f"Do you want to run this command?", default=True):
                                 result = os.system(command)
@@ -157,16 +166,15 @@ def install_package_from_zip(zip_path, package_name):
                 click.echo(f"Error reading install_steps from mcp_package.json: {e}", err=True)
         else:
             click.echo("No mcp_package.json found in the installed package directory.")
-        return True
+        return True, install_inputs_values
     except zipfile.BadZipFile:
         click.echo(f"Error: Downloaded file {zip_path} is not a valid zip file.", err=True)
         if os.path.exists(zip_path): os.remove(zip_path)
-        return False
+        return False, {}
     except Exception as e:
         click.echo(f"Error installing package {package_name}: {e}", err=True)
-        # Clean up partially extracted files? Maybe later.
         if os.path.exists(zip_path): os.remove(zip_path)
-        return False
+        return False, {}
 
 def get_installed_packages():
     """Lists locally installed packages."""
@@ -499,7 +507,7 @@ def install(package_name, target):
         os.rename(tmp_package_path, package_path)
 
         click.echo(f"[LOG] Calling install_package_from_zip for {filename}...")
-        install_success = install_package_from_zip(package_path, package_name)
+        install_success, install_inputs_values = install_package_from_zip(package_path, package_name)
         if not install_success:
             click.echo(f"[LOG] Error: install_package_from_zip failed for {package_name}.", err=True)
             sys.exit(1)
@@ -517,7 +525,7 @@ def install(package_name, target):
         target_path = get_target_config_path(target)
         if target_path:
             click.echo(f"Attempting to add configuration to target '{target}' at {target_path}...")
-            install_path = os.path.join(INSTALL_DIR, package_name)  # Define install_path as the extracted directory
+            install_path = os.path.join(INSTALL_DIR, package_name)
             mcp_json_path = os.path.join(install_path, "mcp_package.json")
             try:
                 with open(mcp_json_path, "r") as f:
@@ -525,8 +533,21 @@ def install(package_name, target):
                 ide_configs = metadata.get("ide_config_commands", {})
                 config_block = ide_configs.get(target)
                 if config_block:
-                    # Use the config block as the config string
-                    config_str = json.dumps({"mcpServers": {package_name: config_block}}, indent=2)
+                    # Substitute install_inputs_values into config_block
+                    def substitute_vars(obj):
+                        if isinstance(obj, dict):
+                            return {k: substitute_vars(v) for k, v in obj.items()}
+                        elif isinstance(obj, list):
+                            return [substitute_vars(x) for x in obj]
+                        elif isinstance(obj, str):
+                            result = obj
+                            for var, val in install_inputs_values.items():
+                                result = result.replace(f"${{{var}}}", val)
+                            return result
+                        else:
+                            return obj
+                    config_block_sub = substitute_vars(config_block)
+                    config_str = json.dumps({"mcpServers": {package_name: config_block_sub}}, indent=2)
                     if not update_mcp_config_file(target_path, package_name, config_str):
                         click.echo("Failed to automatically update target configuration file.", err=True)
                 else:
