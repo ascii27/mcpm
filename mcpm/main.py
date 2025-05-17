@@ -129,6 +129,34 @@ def install_package_from_zip(zip_path, package_name):
         # Clean up the temporary zip file
         os.remove(zip_path)
         click.echo(f"Successfully installed {package_name}.")
+
+        # --- NEW: Run install_steps from mcp_package.json if present ---
+        metadata_path = target_install_path / "mcp_package.json"
+        if metadata_path.exists():
+            try:
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+                install_steps = metadata.get("install_steps", [])
+                if install_steps:
+                    click.echo(f"Running install steps for {package_name}...")
+                    for idx, step in enumerate(install_steps, 1):
+                        if step.get("type") == "shell" and "command" in step:
+                            command = step["command"]
+                            click.echo(f"Step {idx}: {command}")
+                            if click.confirm(f"Do you want to run this command?", default=True):
+                                result = os.system(command)
+                                if result != 0:
+                                    click.echo(f"Warning: Command '{command}' exited with code {result}", err=True)
+                            else:
+                                click.echo("Skipped this step.")
+                        else:
+                            click.echo(f"Unknown or unsupported step type: {step}", err=True)
+                else:
+                    click.echo("No install steps defined in mcp_package.json.")
+            except Exception as e:
+                click.echo(f"Error reading install_steps from mcp_package.json: {e}", err=True)
+        else:
+            click.echo("No mcp_package.json found in the installed package directory.")
         return True
     except zipfile.BadZipFile:
         click.echo(f"Error: Downloaded file {zip_path} is not a valid zip file.", err=True)
@@ -271,6 +299,60 @@ def update_mcp_config_file(config_path: Path, server_registry_name: str, server_
         click.echo(traceback.format_exc(), err=True)
         return False
 
+# --- NEW Helper: Remove server from config ---
+def remove_server_from_mcp_config(config_path: Path, server_short_name: str):
+    """Reads a target MCP JSON configuration file, removes a server entry, and writes it back.
+
+    Args:
+        config_path: Path to the target JSON configuration file.
+        server_short_name: The key name of the server to remove within the 'mcpServers' object.
+
+    Returns:
+        True if successful or server was already absent, False on error.
+    """
+    if not config_path.exists():
+        click.echo(f"Info: Target config file {config_path} does not exist. Nothing to remove.")
+        return True # Nothing to do, consider it success
+
+    try:
+        data = {}
+        with open(config_path, 'r') as f:
+            try:
+                data = json.load(f)
+                if not isinstance(data, dict):
+                    click.echo(f"Warning: Config file {config_path} is not a JSON object. Cannot remove server entry.", err=True)
+                    return False
+            except json.JSONDecodeError:
+                click.echo(f"Warning: Could not parse config file {config_path}. Cannot remove server entry.", err=True)
+                return False # Don't overwrite potentially corrupt file
+
+        if 'mcpServers' not in data or not isinstance(data.get('mcpServers'), dict):
+            click.echo(f"Info: 'mcpServers' object not found in {config_path}. Nothing to remove.")
+            return True # Server effectively absent
+
+        if server_short_name in data['mcpServers']:
+            click.echo(f"Removing server '{server_short_name}' from {config_path}...")
+            del data['mcpServers'][server_short_name]
+
+            # Write updated data back
+            with open(config_path, 'w') as f:
+                json.dump(data, f, indent=2)
+                f.write('\n')
+            click.echo(f"Successfully removed '{server_short_name}' from {config_path}.")
+        else:
+            click.echo(f"Info: Server '{server_short_name}' not found in {config_path}. Nothing to remove.")
+            
+        return True
+
+    except IOError as e:
+        click.echo(f"Error accessing config file {config_path}: {e}", err=True)
+        return False
+    except Exception as e:
+        import traceback
+        click.echo(f"An unexpected error occurred while removing server from {config_path}:", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        return False
+
 # --- CLI Commands ---
 
 @click.group()
@@ -302,9 +384,11 @@ def list_items():
     packages = get_registry_packages()
     if packages:
         for pkg in packages:
-             all_items.append({
+            all_items.append({
                 'type': 'Package',
                 'name': pkg.get('name', 'Unknown Package'),
+                'install_name': pkg.get('install_name', 'N/A'),
+                'latest_version': pkg.get('latest_version', pkg.get('version', 'N/A')),
                 'version': pkg.get('version', 'N/A')
             })
     elif packages is None: # Handle fetch error
@@ -319,8 +403,9 @@ def list_items():
     for item in all_items:
         if item['type'] == 'Package':
             name = item.get('name', 'N/A')
-            version = item.get('version', 'N/A')
-            click.echo(f"{item['type']:<10} {name:<30} {version:<30}")
+            install_name = item.get('install_name', 'N/A')
+            version = item.get('latest_version', item.get('version', 'N/A'))
+            click.echo(f"{item['type']:<10} {name:<30} {install_name + ' / ' + str(version):<30}")
         elif item['type'] == 'Server':
             display_name = item.get('display_name', 'N/A')
             registry_name = item.get('registry_name', 'N/A') # This is the install name
@@ -397,22 +482,14 @@ def install(package_name, target):
     os.makedirs(package_dir, exist_ok=True)
     download_url = f"{registry_url}/packages/{package_name}/latest/download" # Use 'latest' for now
 
-    click.echo(f"Downloading {package_name} (latest) from {download_url}...")
-
+    # Download the package zip file
+    filename = f"{package_name}.zip" # Default filename
+    package_path = os.path.join(package_dir, filename)
+    click.echo(f"Downloading package from: {download_url}")
+    tmp_package_path = package_path + ".tmp"  # Always define before try so it's available in except
     try:
         response = requests.get(download_url, stream=True)
-        response.raise_for_status() # Check for 4xx/5xx errors
-
-        # Extract filename from Content-Disposition header if possible, otherwise guess
-        content_disposition = response.headers.get('content-disposition')
-        filename = f"{package_name}.zip" # Default filename
-        if content_disposition:
-            filenames = re.findall('filename="(.+)"', content_disposition)
-            if filenames:
-                filename = filenames[0]
-
-        package_path = os.path.join(package_dir, filename)
-        tmp_package_path = package_path + ".tmp"
+        response.raise_for_status()
 
         with open(tmp_package_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
@@ -421,88 +498,204 @@ def install(package_name, target):
         # Atomic rename after successful download
         os.rename(tmp_package_path, package_path)
 
-        click.echo(f"Successfully downloaded {filename}.")
-
-        # Unzip the package
-        install_path = os.path.join(package_dir, package_name) # Install into a sub-folder named after the package
-        click.echo(f"Extracting package to {install_path}...")
-
-        try:
-             # Ensure the target directory exists and is empty
-             if os.path.exists(install_path):
-                 shutil.rmtree(install_path) # Remove existing directory first
-             os.makedirs(install_path, exist_ok=True)
-
-             with zipfile.ZipFile(package_path, 'r') as zip_ref:
-                 zip_ref.extractall(install_path)
-             click.echo(f"Successfully installed '{package_name}' to {install_path}")
-             # Optionally remove the zip file after extraction
-             # os.remove(package_path)
-        except zipfile.BadZipFile:
-             click.echo(f"Error: Downloaded file '{filename}' is not a valid zip file.", err=True)
-             os.remove(package_path) # Clean up invalid download
-             sys.exit(1)
-        except Exception as e:
-             click.echo(f"Error extracting package: {e}", err=True)
-             sys.exit(1)
-
+        click.echo(f"[LOG] Calling install_package_from_zip for {filename}...")
+        install_success = install_package_from_zip(package_path, package_name)
+        if not install_success:
+            click.echo(f"[LOG] Error: install_package_from_zip failed for {package_name}.", err=True)
+            sys.exit(1)
+        else:
+            click.echo(f"[LOG] install_package_from_zip completed for {package_name}.")
     except requests.exceptions.RequestException as e:
-        click.echo(f"Error downloading package {package_name}: {e}", err=True)
-        if os.path.exists(tmp_package_path):
+        click.echo(f"[LOG] Error downloading package {package_name}: {e}", err=True)
+        if tmp_package_path and os.path.exists(tmp_package_path):
             os.remove(tmp_package_path) # Clean up partial download
-        click.echo(f"Failed to find or download package '{package_name}'.") # More specific message
+        click.echo(f"[LOG] Failed to find or download package '{package_name}'.")
         sys.exit(1)
 
-    # If target tool specified, try to update its config
+    # If target tool specified, try to update its config using ide_config_commands in mcp_package.json
     if target:
         target_path = get_target_config_path(target)
         if target_path:
             click.echo(f"Attempting to add configuration to target '{target}' at {target_path}...")
-            # Use the server_config field from package details
-            package_details_url = f"{registry_url}/packages/{package_name}/latest/details" # Append specific path
+            install_path = os.path.join(INSTALL_DIR, package_name)  # Define install_path as the extracted directory
+            mcp_json_path = os.path.join(install_path, "mcp_package.json")
             try:
-                response = requests.get(package_details_url)
-                response.raise_for_status() # Raise an exception for bad status codes
-                package_details = response.json() # Assuming the registry returns JSON
-                server_config_str = package_details.get('server_config')
-                if server_config_str:
-                    if not update_mcp_config_file(target_path, package_name, server_config_str): # Use the correct variable
-                        # Error message already printed by update_mcp_config_file
+                with open(mcp_json_path, "r") as f:
+                    metadata = json.load(f)
+                ide_configs = metadata.get("ide_config_commands", {})
+                config_block = ide_configs.get(target)
+                if config_block:
+                    # Use the config block as the config string
+                    config_str = json.dumps({"mcpServers": {package_name: config_block}}, indent=2)
+                    if not update_mcp_config_file(target_path, package_name, config_str):
                         click.echo("Failed to automatically update target configuration file.", err=True)
-                        # Decide if failure here should stop the whole install?
-                        # For now, it continues with package installation.
                 else:
-                    click.echo(f"Package '{package_name}' does not include server configuration ('server_config' field missing or empty in registry data). Skipping target update.")
-            except requests.exceptions.RequestException as e:
-                click.echo(f"Error fetching package details for {package_name}: {e}", err=True)
-                click.echo("Skipping target configuration update.")
-            except json.JSONDecodeError:
-                click.echo(f"Error: Package details for {package_name} are not valid JSON.", err=True)
+                    click.echo(f"No IDE config command found for target '{target}' in mcp_package.json. Skipping target update.")
+            except Exception as e:
+                click.echo(f"Error reading IDE config commands from mcp_package.json: {e}", err=True)
                 click.echo("Skipping target configuration update.")
 
 @cli.command(name='uninstall')
 @click.argument('package_name')
-def uninstall(package_name):
-    """Uninstall an installed MCP server package."""
-    target_path = INSTALL_DIR / package_name
-    if target_path.exists() and target_path.is_dir():
+@click.option('--target', default=None, help="Remove server configuration from the specified target tool's config file (e.g., 'windsurf').")
+def uninstall(package_name, target):
+    """Uninstalls a package and optionally removes its configuration from a target tool."""
+    package_path = INSTALL_DIR / package_name
+    
+    # --- Configuration Removal Logic ---
+    if target:
+        target_config_path = get_target_config_path(target)
+        if not target_config_path:
+            click.echo(f"Error: Unknown target tool '{target}'. Cannot remove configuration.", err=True)
+            # Decide if this should prevent package removal? For now, let's continue.
+        else:
+            click.echo(f"Attempting to remove configuration for '{package_name}' from target '{target}' ({target_config_path})...")
+            # Try to find the IDE config block for this package/target from mcp_package.json
+            mcp_json_path = package_path / "mcp_package.json"
+            server_short_name = package_name  # Default to package name
+            if mcp_json_path.exists():
+                try:
+                    with open(mcp_json_path, "r") as f:
+                        metadata = json.load(f)
+                    ide_configs = metadata.get("ide_config_commands", {})
+                    if target in ide_configs:
+                        # Use the package_name as the key in the config file, matching install logic
+                        remove_server_from_mcp_config(target_config_path, package_name)
+                        click.echo(f"Removed IDE config for '{package_name}' from '{target}'.")
+                    else:
+                        click.echo(f"No IDE config command found for target '{target}' in mcp_package.json. Skipping config removal.")
+                except Exception as e:
+                    click.echo(f"Error reading IDE config commands from mcp_package.json: {e}", err=True)
+                    click.echo("Skipping IDE config removal.")
+            else:
+                click.echo(f"No mcp_package.json found in package directory {package_path}. Skipping IDE config removal.")
+    # --- First: Remove from IDE configs if target specified ---
+    if target:
+        target_config_path = get_target_config_path(target)
+        if not target_config_path:
+            click.echo(f"Error: Unknown target tool '{target}'. Cannot remove configuration.", err=True)
+        else:
+            click.echo(f"Attempting to remove configuration for '{package_name}' from target '{target}' ({target_config_path})...")
+            mcp_json_path = package_path / "mcp_package.json"
+            if mcp_json_path.exists():
+                try:
+                    with open(mcp_json_path, "r") as f:
+                        metadata = json.load(f)
+                    ide_configs = metadata.get("ide_config_commands", {})
+                    if target in ide_configs:
+                        remove_server_from_mcp_config(target_config_path, package_name)
+                        click.echo(f"Removed IDE config for '{package_name}' from '{target}'.")
+                    else:
+                        click.echo(f"No IDE config command found for target '{target}' in mcp_package.json. Skipping config removal.")
+                except Exception as e:
+                    click.echo(f"Error reading IDE config commands from mcp_package.json: {e}", err=True)
+                    click.echo("Skipping IDE config removal.")
+            else:
+                click.echo(f"No mcp_package.json found in package directory {package_path}. Skipping IDE config removal.")
+
+    # --- Second: Run uninstall_steps from mcp_package.json ---
+    mcp_json_path = package_path / "mcp_package.json"
+    if mcp_json_path.exists():
         try:
-            click.echo(f"Removing package {package_name} from {target_path}...")
-            shutil.rmtree(target_path) # Use shutil for actual removal
-            click.echo(f"Successfully removed {package_name}.")
-        except OSError as e:
-            click.echo(f"Error removing package {package_name}: {e}", err=True)
+            with open(mcp_json_path, "r") as f:
+                metadata = json.load(f)
+            uninstall_steps = metadata.get("uninstall_steps", [])
+            if uninstall_steps:
+                click.echo(f"Running uninstall steps for {package_name}...")
+                for idx, step in enumerate(uninstall_steps, 1):
+                    if step.get("type") == "shell" and "command" in step:
+                        command = step["command"]
+                        click.echo(f"Uninstall Step {idx}: {command}")
+                        if click.confirm(f"Do you want to run this uninstall command?", default=True):
+                            result = os.system(command)
+                            if result != 0:
+                                click.echo(f"Warning: Uninstall command '{command}' exited with code {result}", err=True)
+                        else:
+                            click.echo("Skipped this uninstall step.")
+                    else:
+                        click.echo(f"Unknown or unsupported uninstall step type: {step}", err=True)
+            else:
+                click.echo("No uninstall steps defined in mcp_package.json.")
+        except Exception as e:
+            click.echo(f"Error reading uninstall_steps from mcp_package.json: {e}", err=True)
     else:
-        click.echo(f"Package {package_name} is not installed or is not a directory.", err=True)
+        click.echo(f"No mcp_package.json found in package directory {package_path}. Skipping uninstall steps.")
+
+    # --- Package Directory Removal Logic ---
+    if package_path.exists() and package_path.is_dir():
+        try:
+            shutil.rmtree(package_path)
+            click.echo(f"Successfully uninstalled package '{package_name}' from {package_path}.")
+        except OSError as e:
+            click.echo(f"Error removing package directory {package_path}: {e}", err=True)
+            sys.exit(1)
+    else:
+        click.echo(f"Package '{package_name}' not found at {package_path}. Nothing to uninstall.")
+        # If target was specified but package wasn't found, config removal might still have run.
+        # Exit with non-zero code if package removal was the primary goal and failed?
+        # For now, if config removal happened, maybe exit 0?
+
+    # --- Zip File Removal Logic ---
+    # Try to find and remove the zip file for this package in the install dir
+    zip_filename = f"{package_name}.zip"
+    zip_path = INSTALL_DIR / zip_filename
+    if zip_path.exists():
+        try:
+            os.remove(zip_path)
+            click.echo(f"Removed zip file: {zip_path}")
+        except Exception as e:
+            click.echo(f"Warning: Could not remove zip file {zip_path}: {e}", err=True)
 
 @cli.command()
-def create():
+@click.option('--output', '-o', default=None, help='Output filename (e.g., my-package.zip)')
+@click.option('--source', '-s', default='.', help='Source directory to package')
+def create(output, source):
     """Create an MCP server package (zip) from the current directory."""
     metadata_file = Path('mcp_package.json')
     if not metadata_file.exists():
-        click.echo(f"Error: {metadata_file} not found in the current directory.", err=True)
-        click.echo("Please create this file with package name and version.")
-        return
+        click.echo("No mcp_package.json found. Let's create one interactively.")
+        # Required fields
+        name = click.prompt("Package name", type=str)
+        version = click.prompt("Version", type=str)
+        # Recommended fields
+        description = click.prompt("Description", type=str, default="", show_default=False)
+        entrypoint = click.prompt("Entrypoint (main file to run)", type=str, default="", show_default=False)
+        author = click.prompt("Author (name and email)", type=str, default="", show_default=False)
+        license_ = click.prompt("License", type=str, default="", show_default=False)
+        # Install steps
+        install_steps = []
+        if click.confirm("Add install steps?", default=False):
+            while True:
+                command = click.prompt("Install step shell command", type=str)
+                install_steps.append({"type": "shell", "command": command})
+                if not click.confirm("Add another install step?", default=False):
+                    break
+        # Uninstall steps
+        uninstall_steps = []
+        if click.confirm("Add uninstall steps?", default=False):
+            while True:
+                command = click.prompt("Uninstall step shell command", type=str)
+                uninstall_steps.append({"type": "shell", "command": command})
+                if not click.confirm("Add another uninstall step?", default=False):
+                    break
+        # Build metadata dict
+        metadata = {"name": name, "version": version}
+        if description:
+            metadata["description"] = description
+        if entrypoint:
+            metadata["entrypoint"] = entrypoint
+        if author:
+            metadata["author"] = author
+        if license_:
+            metadata["license"] = license_
+        if install_steps:
+            metadata["install_steps"] = install_steps
+        if uninstall_steps:
+            metadata["uninstall_steps"] = uninstall_steps
+        # Write to file
+        with open(metadata_file, "w") as f:
+            json.dump(metadata, f, indent=2)
+        click.echo(f"Created {metadata_file}.")
 
     try:
         with open(metadata_file, 'r') as f:
@@ -517,15 +710,45 @@ def create():
     package_name = metadata.get('name')
     package_version = metadata.get('version')
 
-    if not package_name or not package_version:
-        click.echo(f"Error: 'name' and 'version' must be defined in {metadata_file}.", err=True)
+    # Required fields
+    missing_fields = []
+    if not package_name:
+        missing_fields.append('name')
+    if not package_version:
+        missing_fields.append('version')
+    if missing_fields:
+        click.echo(f"Error: The following required fields are missing from {metadata_file}: {', '.join(missing_fields)}", err=True)
         return
+
+    # Recommended fields
+    recommended_fields = ['description', 'entrypoint', 'author', 'license']
+    for field in recommended_fields:
+        if field not in metadata:
+            click.echo(f"Warning: Recommended field '{field}' is missing from {metadata_file}.")
+
+    # Validate install_steps and uninstall_steps (if present)
+    for steps_key in ['install_steps', 'uninstall_steps']:
+        steps = metadata.get(steps_key)
+        if steps is not None:
+            if not isinstance(steps, list):
+                click.echo(f"Error: '{steps_key}' must be a list if present.", err=True)
+                return
+            for i, step in enumerate(steps, 1):
+                if not isinstance(step, dict) or step.get('type') != 'shell' or 'command' not in step:
+                    click.echo(f"Error: Each step in '{steps_key}' must be an object with type 'shell' and a 'command' string. Problem at index {i-1}.", err=True)
+                    return
 
     # Sanitize name for filename (basic example)
     safe_name = ''.join(c if c.isalnum() or c in '-_' else '_' for c in package_name)
     output_filename = f"{safe_name}-{package_version}.zip"
 
+    # Ensure mcp_package.json is at the root of the zip
+    if not Path('mcp_package.json').exists():
+        click.echo("Error: mcp_package.json must be present at the root of the package directory.", err=True)
+        return
+
     create_package_archive(output_filename, source_dir='.')
+    click.echo(f"Package created: {output_filename}")
 
 @cli.command()
 @click.argument('package_file', type=click.Path(exists=True, dir_okay=False, readable=True))

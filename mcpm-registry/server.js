@@ -122,7 +122,7 @@ app.get('/api/packages/', (req, res) => {
     const sql = `
         SELECT p1.*
         FROM packages p1
-        LEFT JOIN packages p2 ON p1.name = p2.name AND p1.upload_time < p2.upload_time
+        LEFT JOIN packages p2 ON p1.install_name = p2.install_name AND p1.upload_time < p2.upload_time
         WHERE p2.id IS NULL
         ORDER BY p1.name ASC;
     `;
@@ -131,9 +131,10 @@ app.get('/api/packages/', (req, res) => {
             console.error("Error fetching packages:", err.message);
             res.status(500).json({ error: "Internal server error", details: err.message });
         } else {
-            // Map to a cleaner format expected by mcpm client (adjust as needed)
+            // Include install_name in the response for each package
             const packageList = rows.map(row => ({
-                name: row.name,
+                name: row.name, // Display name
+                install_name: row.install_name,
                 latest_version: row.version,
                 description: row.description
             }));
@@ -167,19 +168,37 @@ app.post('/api/packages/publish', upload.single('package'), (req, res) => {
     }
 
     // Validate required metadata fields
-    const { name, version, description, entrypoint, author, license } = metadata;
-    if (!name || !version) {
+    let { name, version, description, entrypoint, author, license } = metadata;
+    // Treat 'name' as display name, generate install name
+    let displayName = name;
+    let installName = null;
+    if (displayName) {
+        installName = displayName.trim().toLowerCase()
+            .replace(/[^a-z0-9\-_\s]/g, "") // Remove non-alphanum (except dash/underscore/space)
+            .replace(/\s+/g, "-"); // Replace whitespace with dash
+    } else {
+        // Fallback: use filename as before
+        let fallback = req.file.originalname || req.file.filename;
+        fallback = fallback.replace(/\.zip$/i, "");
+        fallback = fallback.replace(/-\d+(?:\.\d+)*$/, "");
+        displayName = fallback;
+        installName = fallback.toLowerCase().replace(/[^a-z0-9\-_]/g, "-");
+    }
+    metadata.name = displayName;
+    metadata.install_name = installName;
+    if (!displayName || !installName || !version) {
         fsPromises.unlink(req.file.path).catch((err) => {
             if (err) console.error("Error removing orphaned upload:", err.message);
         });
-        return res.status(400).json({ error: "Metadata must include 'name' and 'version'." });
+        return res.status(400).json({ error: "Metadata must include 'name' and 'version'. (Name can be auto-generated from filename if omitted)" });
     }
 
     const filename = req.file.filename; // The unique filename assigned by multer
 
-    const sql = `INSERT INTO packages (name, version, description, entrypoint, author, license, filename)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`;
-    const params = [name, version, description, entrypoint, author, license, filename];
+    // Update SQL to store both display name and install name
+    const sql = `INSERT INTO packages (name, install_name, version, description, entrypoint, author, license, filename)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+    const params = [displayName, installName, version, description, entrypoint, author, license, filename];
 
     db.run(sql, params, function(err) { // Use function() to access this.lastID
         if (err) {
@@ -206,9 +225,9 @@ app.get('/api/packages/:name/:version/download', (req, res) => {
     let version = req.params.version;
 
     const findAndSendFile = (packageName, packageVersion) => {
-        // Find the corresponding filename in the database
-        const sql = "SELECT filename FROM packages WHERE name = ? AND version = ?";
-        db.get(sql, [packageName, packageVersion], (err, row) => {
+        // Try to find by install_name first, then by display name
+        const sql = `SELECT filename FROM packages WHERE (install_name = ? OR name = ?) AND version = ?`;
+        db.get(sql, [packageName, packageName, packageVersion], (err, row) => {
             if (err) {
                 console.error(`Error finding package ${packageName} v${packageVersion}:`, err.message);
                 return res.status(500).json({ error: "Internal server error finding package", details: err.message });
@@ -230,7 +249,7 @@ app.get('/api/packages/:name/:version/download', (req, res) => {
                 res.setHeader('Content-Type', 'application/zip');
 
                 // Stream the file
-                const fileStream = fsPromises.createReadStream(filePath);
+                const fileStream = fs.createReadStream(filePath);
                 fileStream.pipe(res);
 
                 fileStream.on('error', (streamErr) => {
@@ -248,13 +267,13 @@ app.get('/api/packages/:name/:version/download', (req, res) => {
     };
 
     if (version.toLowerCase() === 'latest') {
-        // Query for the latest version based on upload_time
-        const latestVersionSql = `SELECT version
+        // Query for the latest version based on upload_time, matching by install_name or name
+        const latestVersionSql = `SELECT version, install_name, name
                                   FROM packages
-                                  WHERE name = ?
+                                  WHERE install_name = ? OR name = ?
                                   ORDER BY upload_time DESC
                                   LIMIT 1`;
-        db.get(latestVersionSql, [name], (err, row) => {
+        db.get(latestVersionSql, [name, name], (err, row) => {
             if (err) {
                 console.error(`Error finding latest version for package ${name}:`, err.message);
                 return res.status(500).json({ error: "Internal server error finding latest version", details: err.message });
@@ -263,8 +282,9 @@ app.get('/api/packages/:name/:version/download', (req, res) => {
                 return res.status(404).json({ error: `Package ${name} not found.` });
             }
             const latestVersion = row.version;
-            console.log(`Request for latest version of ${name}, resolved to ${latestVersion}`);
-            findAndSendFile(name, latestVersion);
+            const resolvedName = row.install_name || row.name;
+            console.log(`Request for latest version of ${name}, resolved to ${latestVersion} (resolved name: ${resolvedName})`);
+            findAndSendFile(resolvedName, latestVersion);
         });
     } else {
         // Use the specific version provided

@@ -4,5 +4,23 @@
   "description": "An example MCP server package.",
   "entrypoint": "server.py",
   "author": "Your Name <your.email@example.com>",
-  "license": "MIT"
+  "license": "MIT",
+  "install_steps": [
+    { "type": "shell", "command": "pip install -r requirements.txt" },
+    { "type": "shell", "command": "python setup.py install" }
+  ],
+  "uninstall_steps": [
+    { "type": "shell", "command": "pip uninstall -y some-dependency" },
+    { "type": "shell", "command": "echo 'Cleanup complete'" }
+  ],
+  "ide_config_commands": {
+    "vscode": {
+      "command": "code",
+      "args": ["--install-extension", "my-mcp-server-support"]
+    },
+    "pycharm": {
+      "command": "pycharm",
+      "args": ["--install-plugin", "my-mcp-server-support"]
+    }
+  }
 }
