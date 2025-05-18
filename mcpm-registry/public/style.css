@@ -128,7 +128,6 @@ form button:active,
 .error {
     color: #dc3545;
     font-weight: bold;
-    padding: 8px 12px;
     background-color: #f8d7da;
     border-radius: 4px;
     margin-bottom: 15px;
@@ -137,7 +136,6 @@ form button:active,
 .success {
     color: #28a745;
     font-weight: bold;
-    padding: 8px 12px;
     background-color: #d4edda;
     border-radius: 4px;
     margin-bottom: 15px;
@@ -324,7 +322,6 @@ form button:active,
 
 /* Info card */
 .info-card {
-    background-color: #f8f9fa;
     border-left: 4px solid #17a2b8;
     padding: 15px;
     border-radius: 4px;
@@ -339,8 +336,6 @@ form button:active,
 }
 
 .info-card code {
-    background-color: #e9ecef;
-    padding: 2px 5px;
     border-radius: 3px;
     font-family: monospace;
 }
