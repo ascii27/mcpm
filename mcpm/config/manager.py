@@ -144,7 +144,7 @@ def remove_server_from_mcp_config(config_path: Path, server_short_name: str):
         click.echo(f"Error writing configuration to {config_path}: {e}", err=True)
         return False
 
-def update_mcp_config_file_for_configure(config_path: Path, server_key_in_target: str, config_snippet_obj: dict, package_install_path: Path):
+def update_mcp_config_file_for_configure(config_path: Path, server_key_in_target: str, config_snippet_obj: dict, package_install_path: Path, input_values=None):
     """
     Reads, updates, and writes the target MCP JSON configuration file using a snippet object.
     The server_key_in_target (package's install_name) will be the key for the snippet.
@@ -178,8 +178,8 @@ def update_mcp_config_file_for_configure(config_path: Path, server_key_in_target
     if 'mcpServers' not in existing_config:
         existing_config['mcpServers'] = {}
     
-    # Process the config snippet to resolve relative paths
-    processed_config = _process_config_snippet(config_snippet_obj, package_install_path)
+    # Process the config snippet to resolve relative paths and substitute variables
+    processed_config = _process_config_snippet(config_snippet_obj, package_install_path, input_values)
     
     # Update the server configuration
     existing_config['mcpServers'][server_key_in_target] = processed_config
@@ -194,18 +194,20 @@ def update_mcp_config_file_for_configure(config_path: Path, server_key_in_target
         click.echo(f"Error writing configuration to {config_path}: {e}", err=True)
         return False
 
-def _process_config_snippet(config_snippet: dict, package_install_path: Path):
+def _process_config_snippet(config_snippet: dict, package_install_path: Path, input_values=None):
     """
-    Process a configuration snippet to resolve relative paths.
+    Process a configuration snippet to resolve relative paths and substitute variables.
     
     Args:
         config_snippet: The configuration snippet (dict) to process.
         package_install_path: Absolute path to the package installation directory.
+        input_values: Dictionary of input values to substitute in string values.
         
     Returns:
-        A processed copy of the configuration snippet with resolved paths.
+        A processed copy of the configuration snippet with resolved paths and substituted variables.
     """
     import copy
+    import json
     
     # Make a deep copy to avoid modifying the original
     processed = copy.deepcopy(config_snippet)
@@ -213,5 +215,17 @@ def _process_config_snippet(config_snippet: dict, package_install_path: Path):
     # Resolve relative paths in the configuration
     if 'path' in processed and processed['path'] == '.':
         processed['path'] = str(package_install_path)
+    
+    # Substitute variables in string values if input_values provided
+    if input_values:
+        # Convert to JSON string
+        config_str = json.dumps(processed)
+        
+        # Substitute variables in the string
+        for var, val in input_values.items():
+            config_str = config_str.replace(f"${{{var}}}", val)
+        
+        # Convert back to dict
+        processed = json.loads(config_str)
     
     return processed
