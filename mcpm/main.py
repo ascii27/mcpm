@@ -3,6 +3,7 @@ import os
 import subprocess
 import requests
 import zipfile
+import webbrowser
 import json
 import shutil
 import sys
@@ -322,34 +323,302 @@ def create_package_archive(output_filename, source_dir='.'):
 
 
 def get_all_installed_package_details():
-    """Fetches details for all installed packages from the local database as a list of dictionaries."""
-    conn = None
+    """Fetches details for all installed packages from the local database.
+    
+    Returns:
+        A list of dictionaries, each containing package details (name, version, install_path, installed_at).
+    """
+    conn = _get_local_db_connection()
     try:
-        conn = _get_local_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT name, version, install_path, installed_at FROM installed_packages")
-        packages_tuples = cursor.fetchall()
+        rows = cursor.fetchall()
         
-        packages_list_of_dicts = []
-        for row_tuple in packages_tuples:
-            packages_list_of_dicts.append({
-                "name": row_tuple[0], # This is the package's install_name
-                "version": row_tuple[1],
-                "install_path": row_tuple[2],
-                "installed_at": row_tuple[3]
+        # Convert rows to a list of dictionaries
+        packages = []
+        for row in rows:
+            packages.append({
+                "name": row[0],
+                "version": row[1],
+                "install_path": row[2],
+                "installed_at": row[3]
             })
-        return packages_list_of_dicts
+        return packages
     except sqlite3.Error as e:
-        click.echo(f"Database error while fetching installed package details: {e}", err=True)
-        return [] 
+        click.echo(f"Error fetching installed packages: {e}", err=True)
+        return []
     finally:
-        if conn:
-            conn.close()
+        conn.close()
+
+
+def _get_package_data_by_name(package_name, all_packages_data):
+    """Finds and returns the full data dictionary for a package by its name."""
+    if not all_packages_data:
+        return None
+    for pkg_data in all_packages_data:
+        if pkg_data.get("name") == package_name:
+            return pkg_data
+    return None
+
+
+def _configure_specific_package(package_name, package_path):
+    """Helper function to configure a specific package, skipping the package selection step.
+    
+    Args:
+        package_name: The name of the package to configure (install_name from DB).
+        package_path: The installation path of the package.
+    """
+    if not package_path:
+        click.echo(f"Error: Could not determine installation path for package '{package_name}'.", err=True)
+        return
+    
+    pkg_install_path = Path(package_path)
+    if not pkg_install_path.exists():
+        click.echo(f"Error: Package installation directory not found at {pkg_install_path}", err=True)
+        return
+    
+    # Load mcp_package.json to get available IDEs for selection
+    mcp_package_json_path = pkg_install_path / "mcp_package.json"
+    if not mcp_package_json_path.exists():
+        click.echo(f"Error: mcp_package.json not found at {mcp_package_json_path} for package '{package_name}'.", err=True)
+        return
+    
+    try:
+        with open(mcp_package_json_path, 'r') as f:
+            package_metadata = json.load(f)
+    except json.JSONDecodeError:
+        click.echo(f"Error: Could not parse {mcp_package_json_path}.", err=True)
+        return
+    except IOError as e:
+        click.echo(f"Error reading {mcp_package_json_path}: {e}", err=True)
+        return
+    
+    # Get available IDE configurations
+    ide_configs = package_metadata.get('ide_config_commands', {})
+    if not ide_configs:
+        click.echo(f"No IDE configurations found in {mcp_package_json_path} for package '{package_name}'.", err=True)
+        return
+    
+    available_ide_keys = list(ide_configs.keys())
+    if not available_ide_keys:
+        click.echo(f"No IDE keys found under 'ide_config_commands' in {mcp_package_json_path}.", err=True)
+        return
+    
+    # Let the user select the target IDE
+    target_ide = questionary.select(
+        f"Select target IDE to configure for package '{package_name}':",
+        choices=available_ide_keys
+    ).ask()
+    
+    if not target_ide:
+        click.echo("No target IDE selected. Exiting configuration.")
+        return
+    
+    # Let the user select the action
+    action = questionary.select(
+        "Select action to perform:",
+        choices=[
+            questionary.Choice("Add/Update configuration in IDE", "add"),
+            questionary.Choice("Remove configuration from IDE", "remove")
+        ]
+    ).ask()
+    
+    if not action:
+        click.echo("No action selected. Exiting configuration.")
+        return
+    
+    # Validate the IDE configuration
+    if target_ide not in ide_configs:
+        click.echo(f"Error: Target IDE '{target_ide}' not found in 'ide_config_commands'.", err=True)
+        return
+    
+    config_snippet_obj = ide_configs[target_ide]
+    if not isinstance(config_snippet_obj, dict):
+        click.echo(f"Error: Configuration snippet for '{target_ide}' is not a valid JSON object.", err=True)
+        return
+    
+    # Get the target IDE config path
+    target_mcp_config_file_path = get_target_config_path(target_ide)
+    if not target_mcp_config_file_path:
+        click.echo(f"Error: Could not determine the MCP configuration file path for target IDE '{target_ide}'.", err=True)
+        return
+    
+    # Confirm the action
+    confirmation_message = ""
+    if action == 'add':
+        confirmation_message = f"This will ADD/UPDATE the configuration for package '{package_name}' (IDE: {target_ide}) in the file: {target_mcp_config_file_path}."
+    elif action == 'remove':
+        confirmation_message = f"This will REMOVE the configuration for package '{package_name}' (IDE: {target_ide}) from the file: {target_mcp_config_file_path}."
+    
+    if not click.confirm(f"{confirmation_message}\nProceed?", default=True):
+        click.echo("Operation cancelled by user.")
+        return
+    
+    # Perform the action
+    if action == 'add':
+        click.echo(f"Adding/Updating configuration for '{package_name}' in '{target_mcp_config_file_path}' for IDE '{target_ide}'...")
+        success = update_mcp_config_file_for_configure(
+            config_path=target_mcp_config_file_path,
+            server_key_in_target=package_name,
+            config_snippet_obj=config_snippet_obj,
+            package_install_path=pkg_install_path
+        )
+        if success:
+            click.echo(f"Successfully ADDED/UPDATED configuration for '{package_name}' for IDE '{target_ide}'.")
+        else:
+            click.echo(f"FAILED to add/update configuration for '{package_name}' for IDE '{target_ide}'.", err=True)
+    
+    elif action == 'remove':
+        click.echo(f"Removing configuration for '{package_name}' from '{target_mcp_config_file_path}' for IDE '{target_ide}'...")
+        success = remove_server_from_mcp_config(
+            config_path=target_mcp_config_file_path,
+            server_short_name=package_name
+        )
+        if success:
+            click.echo(f"Successfully REMOVED configuration for '{package_name}' for IDE '{target_ide}'.")
+        else:
+            click.echo(f"FAILED to remove configuration for '{package_name}' for IDE '{target_ide}'.", err=True)
+
+
+def _display_package_details_interactive(package_name, all_packages_data, installed_packages_info, ctx):
+    """Displays detailed information for a selected package and allows interactive
+    management (install/uninstall, open URLs).
+    
+    Args:
+        package_name: The name of the package to display details for.
+        all_packages_data: List of all package data dictionaries from the registry.
+        installed_packages_info: Dictionary of installed packages info keyed by name.
+        ctx: Click context for invoking other commands.
+        
+    Returns:
+        A status string: 'back_to_list', 'state_changed', 'exit_mcpm', or 'details_refresh'.
+    """
+    click.clear()  # Attempt to clear the screen for a cleaner UI
+
+    pkg_detail = _get_package_data_by_name(package_name, all_packages_data)
+
+    if not pkg_detail:
+        click.echo(click.style(f"Error: Could not find details for package '{package_name}'.", fg="red"))
+        return 'back_to_list'
+
+    # Extract package details - use .get() with defaults
+    name = pkg_detail.get("name", "N/A")
+    description = pkg_detail.get("description", "No description available.")
+    author = pkg_detail.get("author", "N/A")
+    version = pkg_detail.get("version", "N/A") # Registry version
+    license_ = pkg_detail.get("license", "N/A")
+    language = pkg_detail.get("language", pkg_detail.get("runtime", "N/A")) # Try both common keys
+    source_url = pkg_detail.get("source_url", pkg_detail.get("repository", "")) # Common keys for repo
+    homepage_url = pkg_detail.get("homepage", "")
+
+    is_installed = name in installed_packages_info
+    status_text = "Not installed"
+    if is_installed:
+        installed_version = installed_packages_info[name].get('version', 'N/A')
+        installed_path = installed_packages_info[name].get('path', 'N/A')
+        status_text = f"Installed (v{installed_version}) at {installed_path}"
+
+    click.echo(click.style("Package Details:", fg="cyan", bold=True))
+    click.echo(f"{click.style('Name:', bold=True):<15} {name}")
+    click.echo(f"{click.style('Description:', bold=True):<15} {description}")
+    click.echo(f"{click.style('Vendor:', bold=True):<15} {author}")
+    click.echo(f"{click.style('License:', bold=True):<15} {license_}")
+    click.echo(f"{click.style('Runtime:', bold=True):<15} {language}")
+    if source_url:
+        click.echo(f"{click.style('Source:', bold=True):<15} {source_url}")
+    if homepage_url and homepage_url != source_url:
+        click.echo(f"{click.style('Homepage:', bold=True):<15} {homepage_url}")
+    click.echo(f"{click.style('Status:', bold=True):<15} {status_text}")
+
+    # --- Actions ---
+    action_choices = []
+    if is_installed:
+        action_choices.append(questionary.Choice(title="🗑️ Uninstall this package", value="uninstall"))
+        
+        # Add Configure option for installed packages
+        # First check if the package has IDE configurations
+        package_path = installed_packages_info[name].get('path')
+        if package_path:
+            metadata_path = Path(package_path) / "mcp_package.json"
+            if metadata_path.exists():
+                try:
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
+                    # Check if the package has IDE configurations
+                    if metadata.get('ide_config_commands'):
+                        action_choices.append(questionary.Choice(title="⚙️ Configure for IDE", value="configure"))
+                except Exception as e:
+                    click.echo(f"Warning: Could not read metadata from {metadata_path}: {e}", err=True)
+    else:
+        action_choices.append(questionary.Choice(title="📦 Install this package", value="install"))
+
+    if source_url:
+        action_choices.append(questionary.Choice(title="🔗 Open source URL", value="open_source"))
+    if homepage_url and homepage_url != source_url:
+        action_choices.append(questionary.Choice(title="🏠 Open homepage URL", value="open_homepage"))
+    
+    action_choices.extend([
+        questionary.Choice(title="⬅️  Back to list", value="back"),
+        questionary.Choice(title="❌ Exit", value="exit")
+    ])
+
+    selected_action = questionary.select(
+        "What would you like to do?",
+        choices=action_choices
+    ).ask()
+
+    if selected_action == "install":
+        click.echo(f"Preparing to install '{name}'...")
+        try:
+            ctx.invoke(cli.commands['install'], package_name=name, target=None)
+            return 'state_changed' # To refresh list and statuses
+        except Exception as e:
+            click.echo(click.style(f"Error during installation: {e}", fg="red"))
+            return 'details_refresh'
+
+    elif selected_action == "uninstall":
+        click.echo(f"Preparing to uninstall '{name}'...")
+        try:
+            ctx.invoke(cli.commands['uninstall'], package_name=name, target=None)
+            return 'state_changed'
+        except Exception as e:
+            click.echo(click.style(f"Error during uninstallation: {e}", fg="red"))
+            return 'details_refresh'
+
+    elif selected_action == "open_source" and source_url:
+        click.echo(f"Opening {source_url}...")
+        webbrowser.open_new_tab(source_url)
+        return 'details_refresh' 
+        
+    elif selected_action == "open_homepage" and homepage_url:
+        click.echo(f"Opening {homepage_url}...")
+        webbrowser.open_new_tab(homepage_url)
+        return 'details_refresh'
+        
+    elif selected_action == "configure":
+        click.echo(f"Configuring package '{name}'...")
+        try:
+            # Use the helper function to configure the specific package directly
+            # This skips the package selection step since we already know which package to configure
+            _configure_specific_package(name, installed_packages_info[name].get('path'))
+            return 'details_refresh'  # Return to the details view after configuration
+        except Exception as e:
+            click.echo(click.style(f"Error during configuration: {e}", fg="red"))
+            return 'details_refresh'
+
+    elif selected_action == "back":
+        return 'back_to_list'
+    elif selected_action == "exit":
+        return 'exit_mcpm'
+    
+    # Default if no action or action not handled (e.g. None if user escapes)
+    return 'back_to_list'
+
 
 # --- JSON Update Logic (MODIFIED) ---
 def update_mcp_config_file(config_path: Path, server_registry_name: str, server_config_str: str):
     """Reads, updates, and writes the target MCP JSON configuration file.
-
+    
     Args:
         config_path: Path to the target JSON file (e.g., windsurf mcp_config.json).
         server_registry_name: The unique name used in the registry (e.g., 'my-calculator-server').
@@ -564,111 +833,306 @@ def cli():
 
 @cli.command("list")
 @click.option('--non-interactive', is_flag=True, help="Run in non-interactive mode, just lists packages and servers.")
-def list_items(non_interactive):
-    """Fetches and lists both packages and servers from the registry.
-    In interactive mode (default), allows management of packages.
+@click.option('--search', help="Search term to filter packages by name, description, or author.")
+def list_items(non_interactive, search):
+    """Fetches and lists packages and servers from the registry.
+    In interactive mode (default), shows package details and allows management.
     """
-    init_local_db() # Ensure DB is initialized
+    init_local_db()  # Ensure DB is initialized
+    ctx = click.get_current_context()
 
-    click.echo("Fetching packages from registry...")
-    packages_data = get_registry_packages()
-    click.echo("Fetching servers from registry...")
-    servers_data = get_registry_servers() # Assuming this returns a list of server dicts
-
-    # Get details of all installed packages from the local DB
-    # get_all_installed_package_details() now returns a list of dictionaries
-    installed_packages_list_of_dicts = get_all_installed_package_details()
-    
-    # For quick lookup by install_name (which is 'name' in the dicts)
-    installed_packages_info = {
-        pkg_dict['name']: {
-            "version": pkg_dict.get('version'),
-            "path": pkg_dict.get('install_path'),
-            "installed_at": pkg_dict.get('installed_at')
-        }
-        for pkg_dict in installed_packages_list_of_dicts
-    }
-
+    # --- Non-Interactive Mode ---
     if non_interactive:
-        click.echo("\n--- Available Packages ---")
-        if packages_data:
+        click.echo("Fetching packages from registry...")
+        packages_data = get_registry_packages()
+        click.echo("Fetching servers from registry...")
+        servers_data = get_registry_servers()
+        
+        # Get details of all installed packages from the local DB
+        installed_packages_list_of_dicts = get_all_installed_package_details()
+        
+        # For quick lookup by install_name (which is 'name' in the dicts)
+        installed_packages_info = {
+            pkg_dict['name']: {
+                "version": pkg_dict.get('version'),
+                "path": pkg_dict.get('install_path'),
+                "installed_at": pkg_dict.get('installed_at')
+            }
+            for pkg_dict in installed_packages_list_of_dicts
+        }
+
+        # Filter packages if search term is provided
+        filtered_packages = []
+        if search:
+            search_lower = search.lower()
+            click.echo(f"\n--- Available Packages (filtered by '{search}') ---")
             for pkg in packages_data:
-                pkg_name = pkg.get("name") # This is the registry name
-                pkg_version = pkg.get("version")
-                install_status = ""
-                if pkg_name in installed_packages_info: # Check against our prepared dict
-                    install_status = f"[INSTALLED v{installed_packages_info[pkg_name].get('version', 'N/A')}]"
-                click.echo(f"- {pkg_name} (v{pkg_version}) {install_status}")
+                pkg_name = pkg.get("name", "")
+                pkg_description = pkg.get("description", "")
+                pkg_author = pkg.get("author", "")
+                
+                # Check if search term matches name, description, or author
+                if (search_lower in pkg_name.lower() or 
+                    search_lower in pkg_description.lower() or 
+                    search_lower in pkg_author.lower()):
+                    filtered_packages.append(pkg)
         else:
-            click.echo("No packages found in the registry or registry is unavailable.")
+            click.echo("\n--- Available Packages ---")
+            filtered_packages = packages_data
+            
+        if filtered_packages:
+            for pkg in filtered_packages:
+                pkg_name = pkg.get("name")
+                pkg_version = pkg.get("version", "N/A")
+                pkg_description = pkg.get("description", "")
+                pkg_author = pkg.get("author", "")
+
+                # Determine installation status
+                is_installed = pkg_name in installed_packages_info
+                install_status = "🟢" if is_installed else ""
+                
+                # Format display with name, version, status, then details
+                line_parts = [f"{pkg_name} (v{pkg_version})", f"{install_status if install_status else '-'}"]
+                
+                # Add installed version if different from registry version
+                if pkg_name in installed_packages_info:
+                    installed_version = installed_packages_info[pkg_name].get('version', 'N/A')
+                    if installed_version != pkg_version:
+                        line_parts.append(f"[v{installed_version} installed]")
+                
+                if pkg_description:
+                    desc_display = pkg_description[:80] + ('...' if len(pkg_description) > 80 else '')
+                    line_parts.append(f"- {desc_display}")
+                
+                if pkg_author:
+                    line_parts.append(f"(by {pkg_author})")
+                
+                click.echo(" ".join(line_parts))
+            
+            if search:
+                click.echo(f"\nFound {len(filtered_packages)} package(s) matching '{search}'.")
+        else:
+            if search:
+                click.echo(f"No packages found matching '{search}'.")
+            else:
+                click.echo("No packages found in the registry or registry is unavailable.")
 
         click.echo("\n--- Registered MCP Servers ---")
         if servers_data:
             for server in servers_data:
                 server_reg_name = server.get('registry_name', 'Unknown Server Name')
                 description = server.get('description', 'No description')
-                install_status = ""
-                if server_reg_name in installed_packages_info: # Assuming server_reg_name can be an install_name
-                     install_status = f"[CONFIGURED/INSTALLED v{installed_packages_info[server_reg_name].get('version', 'N/A')}]" 
-                click.echo(f"- {server_reg_name}: {description} {install_status}")
+                
+                # Determine installation status
+                is_installed = server_reg_name in installed_packages_info
+                install_status = "🟢" if is_installed else ""
+                
+                # Build display parts with name, version, status, then details
+                display_parts = [f"{server_reg_name}"]
+                
+                # Add version info
+                version = installed_packages_info[server_reg_name].get('version', 'N/A') if is_installed else 'N/A'
+                display_parts.append(f"(v{version})")
+                display_parts.append(f"{install_status if install_status else '-'}")
+                display_parts.append(f": {description}")
+                    
+                click.echo(" ".join(display_parts))
         else:
             click.echo("No MCP servers found in the registry or registry is unavailable.")
         return
 
-    # --- Interactive Mode ---
-    choices = []
-    if packages_data:
-        choices.append(questionary.Separator("-- Available Packages (from Registry) --"))
-        for pkg_data in packages_data:
-            pkg_registry_name = pkg_data.get("name")
-            pkg_registry_version = pkg_data.get("version", "N/A")
-            
-            is_installed = pkg_registry_name in installed_packages_info
-            
-            action_verb = "Uninstall" if is_installed else "Install"
-            display_version = installed_packages_info[pkg_registry_name].get('version', pkg_registry_version) if is_installed else pkg_registry_version
-            
-            title = f"{action_verb} {pkg_registry_name} (v{display_version})"
-            if is_installed:
-                title += f" - Installed at {installed_packages_info[pkg_registry_name].get('path', 'N/A')}"
-            
-            value_action = "uninstall" if is_installed else "install"
-            value = f"{value_action}:{pkg_registry_name}"
+    # --- Interactive Mode Loop ---
+    current_package_to_detail = None  # To track which package details to show
+    search_query = None  # Initialize search query outside the loop
 
-            choices.append(questionary.Choice(title=title, value=value))
+    while True:
+        # Clear screen for better UI
+        click.clear()
+        
+        # Only fetch fresh data if not coming from a detail view that needs to be refreshed
+        if current_package_to_detail is None:
+            click.echo("Fetching latest package information...")
+            packages_data = get_registry_packages()
+            installed_packages_list_of_dicts = get_all_installed_package_details()
+            installed_packages_info = {
+                pkg_dict['name']: {
+                    "version": pkg_dict.get('version'),
+                    "path": pkg_dict.get('install_path'),
+                    "installed_at": pkg_dict.get('installed_at')
+                }
+                for pkg_dict in installed_packages_list_of_dicts
+            }
 
-    if installed_packages_list_of_dicts:
-        choices.append(questionary.Separator("-- Locally Installed Packages (from DB) --"))
+        # If we have a package to show details for, display it and handle the result
+        if current_package_to_detail is not None:
+            result = _display_package_details_interactive(
+                current_package_to_detail, packages_data, installed_packages_info, ctx
+            )
+            
+            # Reset current_package_to_detail unless we need to refresh the same view
+            if result != 'details_refresh':
+                current_package_to_detail = None
+                
+            # Handle the result from the details view
+            if result == 'exit_mcpm':
+                click.echo("Exiting mcpm.")
+                break
+            elif result == 'back_to_list':
+                continue  # Go back to main list
+            elif result == 'state_changed':
+                continue  # Refresh data and show main list
+            elif result == 'details_refresh':
+                continue  # Show the same package details again
+            
+        # Build the main package list
+        choices = []
+        if packages_data:
+            choices.append(questionary.Separator("-- Available Packages (Select for details) --"))
+            
+            # Filter packages based on search query if provided
+            displayed_packages = []
+            for pkg_data in packages_data:
+                pkg_name = pkg_data.get("name", "")
+                pkg_description = pkg_data.get("description", "")
+                pkg_author = pkg_data.get("author", "")
+                
+                # If search query is provided, filter packages
+                if search_query:
+                    search_query_lower = search_query.lower()
+                    # Check if search query matches name, description, or author
+                    if (search_query_lower in pkg_name.lower() or 
+                        search_query_lower in pkg_description.lower() or 
+                        search_query_lower in pkg_author.lower()):
+                        displayed_packages.append(pkg_data)
+                else:
+                    # No search query, show all packages
+                    displayed_packages.append(pkg_data)
+            
+            # Display filtered packages
+            for pkg_data in displayed_packages:
+                pkg_name = pkg_data.get("name")
+                pkg_version = pkg_data.get("version", "N/A")
+                pkg_description = pkg_data.get("description", "")
+                pkg_author = pkg_data.get("author", "")
+                
+                # Check if installed
+                is_installed = pkg_name in installed_packages_info
+                
+                # Use installed version if available
+                display_version = installed_packages_info[pkg_name].get('version', pkg_version) if is_installed else pkg_version
+                
+                # Build title parts with name, version, then status
+                status_icon = "🟢" if is_installed else "-"
+                
+                title_parts = [
+                    f"{pkg_name} (v{display_version})",
+                    status_icon
+                ]
+                
+                # Add truncated description if available
+                if pkg_description:
+                    desc_display = pkg_description[:80] + ('...' if len(pkg_description) > 80 else '')
+                    title_parts.append(f"- {desc_display}")
+                
+                # Add author if available
+                if pkg_author:
+                    title_parts.append(f"(by {pkg_author})")
+                
+                # Join all parts, filtering out empty strings
+                title = " ".join(filter(None, title_parts))
+                
+                # Add to choices - value is just the package name for details view
+                choices.append(questionary.Choice(title=title, value=pkg_name))
+                
+            # Show search results count if search was performed
+            if search_query and len(displayed_packages) == 0:
+                choices.append(questionary.Separator(f"-- No packages found matching '{search_query}' --"))
+            elif search_query:
+                choices.append(questionary.Separator(f"-- Found {len(displayed_packages)} package(s) matching '{search_query}' --"))
+        
+        # Add locally installed packages that aren't in the registry
+        local_only_packages = []
         for pkg_dict in installed_packages_list_of_dicts:
-            if not any(hasattr(choice, 'value') and choice.value == f"uninstall:{pkg_dict['name']}" for choice in choices):
-                choices.append(
-                    questionary.Choice(
-                        title=f"Uninstall {pkg_dict['name']} (v{pkg_dict.get('version', 'N/A')}) - Installed at {pkg_dict.get('install_path', 'N/A')}",
-                        value=f"uninstall:{pkg_dict['name']}"
-                    )
-                )
-    
-    if not choices:
-        click.echo("No packages available in registry or installed locally.")
-        return
+            if not _get_package_data_by_name(pkg_dict['name'], packages_data):
+                local_only_packages.append(pkg_dict)
+        
+        # Filter local packages if search query is provided
+        filtered_local_packages = []
+        if search_query:
+            search_query_lower = search_query.lower()
+            for pkg_dict in local_only_packages:
+                pkg_name = pkg_dict['name']
+                # For local packages, we can only search by name since we might not have description/author
+                if search_query_lower in pkg_name.lower():
+                    filtered_local_packages.append(pkg_dict)
+        else:
+            filtered_local_packages = local_only_packages
+                
+        if filtered_local_packages:
+            choices.append(questionary.Separator("-- Locally Installed Packages (Not in Registry) --"))
+            for pkg_dict in filtered_local_packages:
+                pkg_name = pkg_dict['name']
+                pkg_version = pkg_dict.get('version', 'N/A')
+                pkg_path = pkg_dict.get('install_path', 'N/A')
+                
+                title = f"{pkg_name} (v{pkg_version}) 🟢 : Local only"
+                choices.append(questionary.Choice(title=title, value=pkg_name))
+            
+            # Show search results for local packages if search was performed
+            if search_query:
+                choices.append(questionary.Separator(f"-- Found {len(filtered_local_packages)} local package(s) matching '{search_query}' --"))
+        
+        if not choices:
+            click.echo("No packages available in registry or installed locally.")
+            if questionary.confirm("No packages found. Try again?", default=True).ask():
+                continue
+            else:
+                break
 
-    selected_action_value = questionary.select(
-        "Manage Packages (select to install/uninstall, or Exit):",
-        choices=choices + [questionary.Separator(), questionary.Choice("Exit", value="exit_interactive_list")],
-        use_shortcuts=True
-    ).ask()
+        # Add search, clear search (if active), and exit options
+        choices.append(questionary.Separator())
+        
+        # Add clear search option if search is active
+        if search_query:
+            choices.append(questionary.Choice(title=f"🗑 Clear search filter '{search_query}'", value="clear_search"))
+            
+        choices.extend([
+            questionary.Choice(title="🔍 Search packages", value="search_packages"),
+            questionary.Choice(title="❌ Exit mcpm", value="exit_mcpm")
+        ])
 
-    if selected_action_value and selected_action_value != "exit_interactive_list":
-        action_type, name = selected_action_value.split(":", 1)
-        ctx = click.get_current_context()
-        if action_type == "install":
-            click.echo(f"Preparing to install '{name}'...")
-            ctx.invoke(cli.commands['install'], package_name=name, target=None)
-        elif action_type == "uninstall":
-            click.echo(f"Preparing to uninstall '{name}'...")
-            ctx.invoke(cli.commands['uninstall'], package_name=name, target=None)
-    else:
-        click.echo("Exiting package management or no action selected.")
+        # Show the list and get selection
+        selected_value = questionary.select(
+            "Select a package to view details:",
+            choices=choices,
+            use_shortcuts=True
+        ).ask()
+
+        # Handle selection
+        if not selected_value:
+            click.echo("No selection made. Exiting.")
+            break
+        elif selected_value == "exit_mcpm":
+            click.echo("Exiting mcpm.")
+            break
+        elif selected_value == "search_packages":
+            # Prompt for search term
+            search_query = questionary.text("Enter search term (name, description, author):").ask()
+            if search_query:
+                click.echo(f"Searching for packages matching '{search_query}'...")
+            else:
+                # If search is cancelled or empty, clear any previous search
+                search_query = None
+                click.echo("Search cancelled. Showing all packages.")
+            continue  # Refresh the list with the search filter
+        elif selected_value == "clear_search":
+            # Clear the search filter
+            search_query = None
+            click.echo("Search filter cleared. Showing all packages.")
+            continue  # Refresh the list without the search filter
+        else:
+            # Set the package name for details view in the next loop iteration
+            current_package_to_detail = selected_value
 
 
 @cli.command()
