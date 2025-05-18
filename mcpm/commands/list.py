@@ -31,7 +31,7 @@ def list_items(non_interactive, search=None):
     
     if non_interactive:
         # Non-interactive mode: just list packages and servers
-        click.echo("📦 MCP Packages")
+        click.echo("✅ MCP Packages")
         if all_packages_data:
             for pkg in all_packages_data:
                 pkg_name = pkg.get("name", "Unknown Package Name")
@@ -41,7 +41,7 @@ def list_items(non_interactive, search=None):
 
                 # Determine installation status
                 is_installed = pkg_name in installed_packages_info
-                install_status = "📦 " if is_installed else "  "
+                install_status = "✅ " if is_installed else "  "
                 
                 # Format display with name, version, status, then details
                 line_parts = [f"{install_status}{pkg_name} (v{pkg_version})"]
@@ -77,7 +77,7 @@ def list_items(non_interactive, search=None):
                 pkg_name = pkg["name"]
                 pkg_version = pkg["version"]
                 pkg_path = pkg["install_path"]
-                click.echo(f"📦 {pkg_name} (v{pkg_version}) [Local only] - {pkg_path}")
+                click.echo(f"✅ {pkg_name} (v{pkg_version}) [Local only] - {pkg_path}")
         
         # List servers
         click.echo("\n🖥️  MCP Servers")
@@ -149,7 +149,7 @@ def list_items(non_interactive, search=None):
                 display_version = installed_packages_info[pkg_name].get('version', pkg_version) if is_installed else pkg_version
                 
                 # Build title parts with name, version, then status
-                status_icon = "📦" if is_installed else "  "
+                status_icon = "✅" if is_installed else "  "
                 
                 # Format title with name, version, status, then description
                 title_parts = [
@@ -198,7 +198,7 @@ def list_items(non_interactive, search=None):
                 
                 # Format title with name, version, status, then details
                 title_parts = [
-                    f"📦 {pkg_name} (v{pkg_version})",
+                    f"✅ {pkg_name} (v{pkg_version})",
                     "[Local only]"
                 ]
                 
