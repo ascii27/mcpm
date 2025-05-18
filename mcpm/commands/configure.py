@@ -7,7 +7,7 @@ import questionary
 from pathlib import Path
 
 from mcpm.config.manager import get_target_config_path, update_mcp_config_file_for_configure, remove_server_from_mcp_config
-from mcpm.database.local_db import init_local_db, get_all_installed_package_details
+from mcpm.database.local_db import init_local_db, get_all_installed_package_details, get_package_input_values
 from mcpm.utils.ui_helpers import _configure_specific_package
 
 def configure_command_func(package_name=None, target_ide=None, action=None, non_interactive=False):
@@ -153,10 +153,13 @@ def _process_configuration(package_name, package_path, target_ide, action):
     # Get the install_name from metadata (for config key)
     install_name = package_metadata.get("install_name", package_name)
     
+    # Get stored input values for this package
+    input_values = get_package_input_values(install_name)
+    
     # Process the action
     if action == "add":
         # Update the configuration
-        if update_mcp_config_file_for_configure(config_path, install_name, ide_config, pkg_install_path):
+        if update_mcp_config_file_for_configure(config_path, install_name, ide_config, pkg_install_path, input_values):
             click.echo(f"Successfully configured {package_name} for {target_ide}.")
         else:
             click.echo(f"Failed to configure {package_name} for {target_ide}.", err=True)

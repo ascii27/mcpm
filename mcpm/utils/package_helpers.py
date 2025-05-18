@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 from mcpm.config.constants import INSTALL_DIR
-from mcpm.database.local_db import add_package_to_local_db, remove_package_from_local_db
+from mcpm.database.local_db import add_package_to_local_db, remove_package_from_local_db, store_package_input_values
 
 def get_installed_packages():
     """Lists locally installed packages."""
@@ -86,6 +86,9 @@ def install_package_from_zip(zip_path, package_name):
                 # Extract package metadata for local DB
                 install_name = metadata.get("install_name", package_name)
                 version = metadata.get("version", "0.0.1")
+                
+                # Store input values in the database for later use
+                store_package_input_values(install_name, install_inputs_values)
                 
                 # Add to local database
                 add_package_to_local_db(install_name, version, str(target_install_path))

@@ -305,10 +305,14 @@ def _configure_specific_package(package_name, package_path):
     # Get the install_name from metadata (for config key)
     install_name = package_metadata.get("install_name", package_name)
     
+    # Get stored input values for this package
+    from mcpm.database.local_db import get_package_input_values
+    input_values = get_package_input_values(install_name)
+    
     # Process the action
     if action == "add":
         # Update the configuration
-        if update_mcp_config_file_for_configure(config_path, install_name, ide_config, pkg_install_path):
+        if update_mcp_config_file_for_configure(config_path, install_name, ide_config, pkg_install_path, input_values):
             click.echo(f"Successfully configured {package_name} for {target_ide}.")
         else:
             click.echo(f"Failed to configure {package_name} for {target_ide}.", err=True)
