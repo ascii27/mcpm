@@ -593,12 +593,25 @@ def list_items(non_interactive):
         click.echo("\n--- Available Packages ---")
         if packages_data:
             for pkg in packages_data:
-                pkg_name = pkg.get("name") # This is the registry name
-                pkg_version = pkg.get("version")
-                install_status = ""
-                if pkg_name in installed_packages_info: # Check against our prepared dict
-                    install_status = f"[INSTALLED v{installed_packages_info[pkg_name].get('version', 'N/A')}]"
-                click.echo(f"- {pkg_name} (v{pkg_version}) {install_status}")
+                pkg_name = pkg.get("name")
+                pkg_version = pkg.get("version", "N/A")
+                pkg_description = pkg.get("description", "")
+                pkg_author = pkg.get("author", "")
+
+                line_parts = [f"- {pkg_name} (v{pkg_version})"]
+
+                if pkg_name in installed_packages_info:
+                    installed_version = installed_packages_info[pkg_name].get('version', 'N/A')
+                    line_parts.append(f"[INSTALLED v{installed_version}]")
+                
+                if pkg_description:
+                    desc_display = pkg_description[:80] + ('...' if len(pkg_description) > 80 else '')
+                    line_parts.append(f"- {desc_display}")
+                
+                if pkg_author:
+                    line_parts.append(f"(by {pkg_author})")
+                
+                click.echo(" ".join(line_parts))
         else:
             click.echo("No packages found in the registry or registry is unavailable.")
 
@@ -622,15 +635,28 @@ def list_items(non_interactive):
         for pkg_data in packages_data:
             pkg_registry_name = pkg_data.get("name")
             pkg_registry_version = pkg_data.get("version", "N/A")
+            pkg_description = pkg_data.get("description", "")
+            pkg_author = pkg_data.get("author", "")
             
             is_installed = pkg_registry_name in installed_packages_info
             
             action_verb = "Uninstall" if is_installed else "Install"
             display_version = installed_packages_info[pkg_registry_name].get('version', pkg_registry_version) if is_installed else pkg_registry_version
             
-            title = f"{action_verb} {pkg_registry_name} (v{display_version})"
-            if is_installed:
-                title += f" - Installed at {installed_packages_info[pkg_registry_name].get('path', 'N/A')}"
+            title_parts = [
+                action_verb,
+                pkg_registry_name,
+                f"(v{display_version})"
+            ]
+            
+            if pkg_description:
+                desc_display = pkg_description[:80] + ('...' if len(pkg_description) > 80 else '')
+                title_parts.append(f"- {desc_display}")
+
+            if pkg_author:
+                title_parts.append(f"(by {pkg_author})")
+            
+            title = " ".join(title_parts)
             
             value_action = "uninstall" if is_installed else "install"
             value = f"{value_action}:{pkg_registry_name}"
