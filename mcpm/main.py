@@ -562,159 +562,113 @@ def cli():
     """Model Context Protocol Manager (MCPM)"""
     pass
 
-@cli.command(name="list")
-@click.option('--non-interactive', is_flag=True, help="Display packages without interactive mode.")
+@cli.command("list")
+@click.option('--non-interactive', is_flag=True, help="Run in non-interactive mode, just lists packages and servers.")
 def list_items(non_interactive):
     """Fetches and lists both packages and servers from the registry.
     In interactive mode (default), allows management of packages.
     """
     init_local_db() # Ensure DB is initialized
-    click.echo("Fetching data from registry...")
+
+    click.echo("Fetching packages from registry...")
+    packages_data = get_registry_packages()
+    click.echo("Fetching servers from registry...")
+    servers_data = get_registry_servers() # Assuming this returns a list of server dicts
+
+    # Get details of all installed packages from the local DB
+    # get_all_installed_package_details() now returns a list of dictionaries
+    installed_packages_list_of_dicts = get_all_installed_package_details()
+    
+    # For quick lookup by install_name (which is 'name' in the dicts)
+    installed_packages_info = {
+        pkg_dict['name']: {
+            "version": pkg_dict.get('version'),
+            "path": pkg_dict.get('install_path'),
+            "installed_at": pkg_dict.get('installed_at')
+        }
+        for pkg_dict in installed_packages_list_of_dicts
+    }
 
     if non_interactive:
-        # --- Non-Interactive Mode: Lists both packages and servers --- 
-        all_items = []
-        installed_db_packages = {p[0]: p for p in get_all_installed_package_details()} # name: (name, version, path, date)
-
-        # Fetch Servers
-        servers = get_registry_servers()
-        if servers is not None:
-            for server in servers:
-                all_items.append({
-                    'item_type': 'Server',
-                    'display_name': server.get('display_name', 'Unknown Server'),
-                    'registry_name': server.get('registry_name', 'N/A'), # Name used for install/config
-                    'language': server.get('language', 'N/A')
-                })
+        click.echo("\n--- Available Packages ---")
+        if packages_data:
+            for pkg in packages_data:
+                pkg_name = pkg.get("name") # This is the registry name
+                pkg_version = pkg.get("version")
+                install_status = ""
+                if pkg_name in installed_packages_info: # Check against our prepared dict
+                    install_status = f"[INSTALLED v{installed_packages_info[pkg_name].get('version', 'N/A')}]"
+                click.echo(f"- {pkg_name} (v{pkg_version}) {install_status}")
         else:
-             click.echo("Warning: Could not retrieve server list from registry.", err=True)
+            click.echo("No packages found in the registry or registry is unavailable.")
 
-        # Fetch Packages
-        packages = get_registry_packages()
-        if packages is not None:
-            for pkg in packages:
-                pkg_name = pkg.get('name') # Used as the primary identifier for packages
-                if not pkg_name:
-                    click.echo(f"Warning: Skipping package with missing name in registry data: {pkg}", err=True)
-                    continue
-                all_items.append({
-                    'item_type': 'Package',
-                    'name': pkg_name, # This is the key for installed_db_packages
-                    'version': pkg.get('version', 'N/A'), # Registry version
-                    'description': pkg.get('description', 'No description')
-                })
+        click.echo("\n--- Registered MCP Servers ---")
+        if servers_data:
+            for server in servers_data:
+                server_reg_name = server.get('registry_name', 'Unknown Server Name')
+                description = server.get('description', 'No description')
+                install_status = ""
+                if server_reg_name in installed_packages_info: # Assuming server_reg_name can be an install_name
+                     install_status = f"[CONFIGURED/INSTALLED v{installed_packages_info[server_reg_name].get('version', 'N/A')}]" 
+                click.echo(f"- {server_reg_name}: {description} {install_status}")
         else:
-            click.echo("Warning: Could not retrieve package list from registry.", err=True)
+            click.echo("No MCP servers found in the registry or registry is unavailable.")
+        return
 
-        if not all_items:
-            click.echo("No items (packages or servers) found in the registry or an error occurred during fetch.")
-            return
-
-        all_items.sort(key=lambda x: (x['item_type'], x.get('name', x.get('display_name', ''))))
-
-        click.echo(f"\n{'Type':<10} {'Name / Display Name':<35} {'Version / Install Name':<30} {'Status / Details':<40}")
-        click.echo("-" * 115)
-
-        for item in all_items:
-            if item['item_type'] == 'Package':
-                name = item['name'] # This is the package's unique name
-                version = item['version']
-                description = item['description']
-                status_marker = ""
-                details_str = f"(Registry v{version})"
-                if name in installed_db_packages:
-                    installed_version = installed_db_packages[name][1]
-                    status_marker = f"[INSTALLED v{installed_version}]"
-                click.echo(f"{item['item_type']:<10} {name:<35} {details_str:<30} {status_marker} {description[:35]}")
+    # --- Interactive Mode ---
+    choices = []
+    if packages_data:
+        choices.append(questionary.Separator("-- Available Packages (from Registry) --"))
+        for pkg_data in packages_data:
+            pkg_registry_name = pkg_data.get("name")
+            pkg_registry_version = pkg_data.get("version", "N/A")
             
-            elif item['item_type'] == 'Server':
-                display_name = item['display_name']
-                registry_name = item['registry_name'] # This is the name used for mcpm install <server_registry_name> --target ...
-                language = item['language']
-                click.echo(f"{item['item_type']:<10} {display_name:<35} (Install as: {registry_name:<20}) (Lang: {language})")
-        return # End of non-interactive mode
+            is_installed = pkg_registry_name in installed_packages_info
+            
+            action_verb = "Uninstall" if is_installed else "Install"
+            display_version = installed_packages_info[pkg_registry_name].get('version', pkg_registry_version) if is_installed else pkg_registry_version
+            
+            title = f"{action_verb} {pkg_registry_name} (v{display_version})"
+            if is_installed:
+                title += f" - Installed at {installed_packages_info[pkg_registry_name].get('path', 'N/A')}"
+            
+            value_action = "uninstall" if is_installed else "install"
+            value = f"{value_action}:{pkg_registry_name}"
+
+            choices.append(questionary.Choice(title=title, value=value))
+
+    if installed_packages_list_of_dicts:
+        choices.append(questionary.Separator("-- Locally Installed Packages (from DB) --"))
+        for pkg_dict in installed_packages_list_of_dicts:
+            if not any(hasattr(choice, 'value') and choice.value == f"uninstall:{pkg_dict['name']}" for choice in choices):
+                choices.append(
+                    questionary.Choice(
+                        title=f"Uninstall {pkg_dict['name']} (v{pkg_dict.get('version', 'N/A')}) - Installed at {pkg_dict.get('install_path', 'N/A')}",
+                        value=f"uninstall:{pkg_dict['name']}"
+                    )
+                )
+    
+    if not choices:
+        click.echo("No packages available in registry or installed locally.")
+        return
+
+    selected_action_value = questionary.select(
+        "Manage Packages (select to install/uninstall, or Exit):",
+        choices=choices + [questionary.Separator(), questionary.Choice("Exit", value="exit_interactive_list")],
+        use_shortcuts=True
+    ).ask()
+
+    if selected_action_value and selected_action_value != "exit_interactive_list":
+        action_type, name = selected_action_value.split(":", 1)
+        ctx = click.get_current_context()
+        if action_type == "install":
+            click.echo(f"Preparing to install '{name}'...")
+            ctx.invoke(cli.commands['install'], package_name=name, target=None)
+        elif action_type == "uninstall":
+            click.echo(f"Preparing to uninstall '{name}'...")
+            ctx.invoke(cli.commands['uninstall'], package_name=name, target=None)
     else:
-        # --- Interactive Mode: Focuses on Packages from Registry --- 
-        click.echo("Entering interactive package management mode...")
-        
-        while True: # Loop for continuous interaction until user exits
-            packages_from_registry = get_registry_packages()
-            if packages_from_registry is None:
-                click.echo("Error: Could not retrieve packages from the registry. Exiting interactive mode.", err=True)
-                break 
-            if not packages_from_registry:
-                click.echo("No packages found in the registry.")
-                break
-
-            installed_package_info = {p[0]: p for p in get_all_installed_package_details()}
-            
-            choices = []
-            # Filter for items that are actual 'packages' (not 'server' types from registry perspective)
-            # and have a 'name' attribute, which is crucial.
-            interactive_packages = [
-                p for p in packages_from_registry 
-                if p.get('name') and p.get('package_type', 'package') == 'package'
-            ]
-            sorted_interactive_packages = sorted(interactive_packages, key=lambda p: p.get('name', ''))
-
-            if not sorted_interactive_packages:
-                click.echo("No installable packages available in the registry to manage interactively.")
-                break
-
-            current_actions_map = {} # Maps choice value (package name) to its details for action
-
-            for idx, pkg_data in enumerate(sorted_interactive_packages):
-                pkg_name = pkg_data["name"] # Name should be reliable here due to pre-filtering
-                registry_version = pkg_data.get("version", "N/A")
-                description = pkg_data.get("description", "")
-                
-                is_installed = pkg_name in installed_package_info
-                action_verb = "Uninstall" if is_installed else "Install"
-                
-                status_line = ""
-                if is_installed:
-                    installed_ver = installed_package_info[pkg_name][1]
-                    status_line = f"(Installed v{installed_ver})"
-                else:
-                    status_line = f"(Available v{registry_version})"
-                
-                choice_title = f"{idx + 1}. {pkg_name} {status_line} - {action_verb} - {description[:40]}..."
-                choices.append(questionary.Choice(title=choice_title, value=pkg_name))
-                current_actions_map[pkg_name] = {'action': action_verb, 'name': pkg_name}
-            
-            choices.append(questionary.Separator())
-            choices.append(questionary.Choice(title=f"{len(choices)}. [ Exit Interactive Mode ]", value="__MCPM_EXIT__"))
-
-            selected_value = questionary.select(
-                "Select a package to manage or exit:",
-                choices=choices,
-                use_shortcuts=False # Avoids potential conflicts with numeric list
-            ).ask()
-
-            if selected_value is None or selected_value == "__MCPM_EXIT__": # User pressed Escape or chose Exit
-                click.echo("Exiting interactive list.")
-                break # Exit the while loop
-
-            action_details = current_actions_map.get(selected_value)
-            if not action_details:
-                click.echo("Invalid selection. Please try again.", err=True)
-                continue # Restart the loop to show choices again
-
-            ctx = click.get_current_context()
-            package_to_manage = action_details['name']
-            
-            if action_details['action'] == "Install":
-                if questionary.confirm(f"Do you want to install {package_to_manage}?").ask():
-                    ctx.invoke(cli.commands['install'], package_name=package_to_manage, target=None)
-            elif action_details['action'] == "Uninstall":
-                if questionary.confirm(f"Do you want to uninstall {package_to_manage}?").ask():
-                    ctx.invoke(cli.commands['uninstall'], package_name=package_to_manage, target=None)
-            
-            # After an action, ask if user wants to continue or exit the interactive session.
-            if not questionary.confirm("Continue managing packages?").ask():
-                click.echo("Exiting interactive list.")
-                break
-            # If yes, the loop will restart, re-fetching and re-displaying the list.
+        click.echo("Exiting package management or no action selected.")
 
 
 @cli.command()
@@ -1024,9 +978,6 @@ def uninstall_command_func(package_name, target):
         # If directory is gone, ensure it's also removed from DB
         remove_package_from_local_db(package_name)
 
-
-
-
 @cli.command("configure")
 @click.option('--package-name', default=None, help="The (install) name of the package to configure. Required in non-interactive mode.")
 @click.option('--target-ide', default=None, help="The target IDE to configure (e.g., 'windsurf'). Required in non-interactive mode.")
@@ -1041,33 +992,34 @@ def configure_command_func(package_name, target_ide, action, non_interactive):
             click.echo("Error: In non-interactive mode, --package-name, --target-ide, and --action are required.", err=True)
             sys.exit(1)
         
-        installed_packages = get_all_installed_package_details()
+        # Fetch details for the specified package
+        installed_packages_list = get_all_installed_package_details() # Returns list of dicts
         selected_package_details = None
-        for pkg in installed_packages:
-            if pkg['name'] == package_name: # 'name' in DB is the install_name
-                selected_package_details = pkg
+        for pkg_dict in installed_packages_list:
+            if pkg_dict['name'] == package_name: # 'name' in DB is the install_name
+                selected_package_details = pkg_dict
                 break
         
         if not selected_package_details:
             click.echo(f"Error: Package '{package_name}' not found or not installed.", err=True)
             sys.exit(1)
         
-        pkg_install_name = selected_package_details['name']
+        pkg_install_name = selected_package_details['name'] # This is the name from the DB, used as key
         pkg_install_path = Path(selected_package_details['install_path'])
 
     else: # Interactive mode
-        installed_packages = get_all_installed_package_details()
+        installed_packages = get_all_installed_package_details() # list of dicts
         if not installed_packages:
-            click.echo("No packages are currently installed.", err=True)
+            click.echo("No packages are currently installed. Cannot configure.", err=True)
             return
 
         package_choices = [
-            f"{pkg['name']} (v{pkg.get('version', 'N/A')}) - {pkg['install_path']}" 
+            # Display format: "PackageName (v1.0) - /path/to/install"
+            f"{pkg['name']} (v{pkg.get('version', 'N/A')}) - {pkg.get('install_path', 'N/A')}" 
             for pkg in installed_packages
         ]
         if not package_choices:
-            # This case should ideally be covered by `if not installed_packages` above
-            click.echo("No installed packages found to configure.", err=True)
+            click.echo("No installed packages found to configure (this should not happen if installed_packages is not empty).", err=True)
             return
 
         selected_pkg_display_name = questionary.select(
@@ -1079,40 +1031,79 @@ def configure_command_func(package_name, target_ide, action, non_interactive):
             click.echo("No package selected. Exiting.")
             return
 
+        # Find the full details of the selected package
+        # Because display name includes version and path, we need to find the match carefully
         selected_package_details = None
         for pkg in installed_packages:
-            display_name = f"{pkg['name']} (v{pkg.get('version', 'N/A')}) - {pkg['install_path']}"
-            if display_name == selected_pkg_display_name:
+            # Reconstruct the display name to match
+            current_pkg_display = f"{pkg['name']} (v{pkg.get('version', 'N/A')}) - {pkg.get('install_path', 'N/A')}"
+            if current_pkg_display == selected_pkg_display_name:
                 selected_package_details = pkg
                 break
         
-        if not selected_package_details:
+        if not selected_package_details: # Should not happen if selection was from list
             click.echo("Error: Could not retrieve details for the selected package.", err=True)
             sys.exit(1)
 
         pkg_install_name = selected_package_details['name']
         pkg_install_path = Path(selected_package_details['install_path'])
 
-        target_ide = questionary.text("Enter the target IDE key (e.g., windsurf):", validate=lambda text: True if len(text) > 0 else "Target IDE cannot be empty.").ask()
+        # Load mcp_package.json to get available IDEs for selection
+        mcp_package_json_path_interactive = pkg_install_path / "mcp_package.json"
+        if not mcp_package_json_path_interactive.exists():
+            click.echo(f"Error: mcp_package.json not found at {mcp_package_json_path_interactive} for package '{pkg_install_name}'.", err=True)
+            click.echo("Cannot determine available IDEs for configuration.")
+            return 
+
+        try:
+            with open(mcp_package_json_path_interactive, 'r') as f_interactive:
+                package_metadata_interactive = json.load(f_interactive)
+        except json.JSONDecodeError:
+            click.echo(f"Error: Could not parse {mcp_package_json_path_interactive} when attempting to list available IDEs.", err=True)
+            return
+        except IOError as e:
+            click.echo(f"Error reading {mcp_package_json_path_interactive} for IDE selection: {e}", err=True)
+            return
+
+        ide_configs_from_pkg_json = package_metadata_interactive.get('ide_config_commands', {})
+        if not ide_configs_from_pkg_json:
+            click.echo(f"No IDE configurations ('ide_config_commands') found in {mcp_package_json_path_interactive} for package '{pkg_install_name}'.", err=True)
+            click.echo("Cannot proceed to select an IDE.")
+            return
+        
+        available_ide_keys = list(ide_configs_from_pkg_json.keys())
+        if not available_ide_keys: # Should be caught by the above, but as a safeguard
+            click.echo(f"No IDE keys found under 'ide_config_commands' in {mcp_package_json_path_interactive}.", err=True)
+            return
+
+        target_ide = questionary.select(
+            f"Select target IDE to configure for package '{pkg_install_name}':",
+            choices=available_ide_keys
+        ).ask()
+
         if not target_ide:
-            click.echo("No target IDE provided. Exiting.")
+            click.echo("No target IDE selected. Exiting.")
             return
         
         action = questionary.select(
-            "Select action:",
+            "Select action to perform:",
             choices=[
-                questionary.Choice("Add/Update configuration", "add"),
-                questionary.Choice("Remove configuration", "remove")
+                questionary.Choice("Add/Update configuration in IDE", "add"),
+                questionary.Choice("Remove configuration from IDE", "remove")
             ]
         ).ask()
+
         if not action:
             click.echo("No action selected. Exiting.")
             return
 
-    # Common logic for both modes
+    # --- Common logic for both interactive and non-interactive modes from here ---
+    
+    # Re-fetch mcp_package.json for the selected package to get the config snippet
+    # This is slightly redundant if in interactive mode but ensures consistency
     mcp_package_json_path = pkg_install_path / "mcp_package.json"
-    if not mcp_package_json_path.exists():
-        click.echo(f"Error: mcp_package.json not found at {mcp_package_json_path}", err=True)
+    if not mcp_package_json_path.exists(): # Should have been caught earlier in interactive
+        click.echo(f"Error: Critical - mcp_package.json not found at {mcp_package_json_path}", err=True)
         sys.exit(1)
 
     try:
@@ -1125,79 +1116,82 @@ def configure_command_func(package_name, target_ide, action, non_interactive):
         click.echo(f"Error reading mcp_package.json at {mcp_package_json_path}: {e}", err=True)
         sys.exit(1)
 
-    # Ensure the install_name from mcp_package.json matches what's in the DB (which is pkg_install_name)
-    # This is critical because pkg_install_name is used as the key in the target IDE config.
+    # Validate install_name consistency (DB vs mcp_package.json)
+    # pkg_install_name is from DB (and is the key for IDE config)
+    # package_metadata.get('install_name') is from the package's own JSON file.
     metadata_actual_install_name = package_metadata.get('install_name')
     if metadata_actual_install_name != pkg_install_name:
-        click.echo(f"Warning: Mismatch in 'install_name' for package.", err=True)
-        click.echo(f"  DB record uses: '{pkg_install_name}' (this will be used as the key).", err=True)
-        click.echo(f"  mcp_package.json has: '{metadata_actual_install_name}'.", err=True)
-        click.echo("  It is highly recommended these match and that 'install_name' in mcp_package.json is unique and stable.",err=True)
-        # Proceeding with pkg_install_name from DB as the key
+        click.echo(f"Warning: Mismatch detected in 'install_name' for the package.", err=True)
+        click.echo(f"  - The local database record (and IDE configuration key) uses: '{pkg_install_name}'.")
+        click.echo(f"  - The package's mcp_package.json file specifies: '{metadata_actual_install_name}'.")
+        click.echo(f"  Proceeding with '{pkg_install_name}' as the key for IDE configuration.", err=True)
+        click.echo("  It is highly recommended that 'install_name' in mcp_package.json matches the initial installation name and remains unique and stable.", err=True)
+        # We use pkg_install_name from the DB as the definitive key for the IDE config,
+        # as this is what would have been used if it was previously configured.
 
     ide_configs = package_metadata.get('ide_config_commands', {})
     if target_ide not in ide_configs:
-        click.echo(f"Error: Target IDE '{target_ide}' not defined in mcp_package.json for package '{pkg_install_name}'.", err=True)
-        available_ides = list(ide_configs.keys())
-        if available_ides:
-            click.echo(f"Available IDE configurations in mcp_package.json: {', '.join(available_ides)}")
+        click.echo(f"Error: Target IDE '{target_ide}' not found in 'ide_config_commands' within {mcp_package_json_path} for package '{pkg_install_name}'.", err=True)
+        available_ides_final_check = list(ide_configs.keys())
+        if available_ides_final_check:
+            click.echo(f"Available IDE configurations in this package: {', '.join(available_ides_final_check)}")
         else:
-            click.echo("No IDE configurations ('ide_config_commands') are defined in this package's mcp_package.json.")
+            click.echo("No IDE configurations are defined in this package's mcp_package.json.")
         sys.exit(1)
 
-    config_snippet_obj = ide_configs[target_ide]
+    config_snippet_obj = ide_configs[target_ide] # This is the JSON object for the target IDE
     if not isinstance(config_snippet_obj, dict):
-        click.echo(f"Error: Configuration for '{target_ide}' in mcp_package.json is not a valid JSON object (dictionary).", err=True)
+        click.echo(f"Error: Configuration snippet for '{target_ide}' in {mcp_package_json_path} is not a valid JSON object (dictionary).", err=True)
         sys.exit(1)
 
     target_mcp_config_file_path = get_target_config_path(target_ide)
     if not target_mcp_config_file_path:
-        click.echo(f"Error: Could not determine configuration file path for target IDE '{target_ide}'.", err=True)
-        click.echo(f"Check DEFAULT_TARGET_CONFIG_PATHS in mcpm/main.py or environment variables (e.g., {WINDSURF_CONFIG_ENV_VAR} for Windsurf).", err=True)
+        click.echo(f"Error: Could not determine the MCP configuration file path for target IDE '{target_ide}'.", err=True)
+        click.echo(f"Please check DEFAULT_TARGET_CONFIG_PATHS in mcpm/main.py or relevant environment variables (e.g., {WINDSURF_CONFIG_ENV_VAR} for Windsurf).", err=True)
         sys.exit(1)
 
+    # Confirmation prompt (unless in non-interactive mode and --yes is implied)
     confirmation_message = ""
     if action == 'add':
-        confirmation_message = f"Proceed with adding/updating configuration for '{pkg_install_name}' in '{target_mcp_config_file_path}' (IDE: {target_ide})?"
+        confirmation_message = f"This will ADD/UPDATE the configuration for package '{pkg_install_name}' (IDE: {target_ide}) in the file: {target_mcp_config_file_path}."
     elif action == 'remove':
-        confirmation_message = f"Proceed with removing configuration for '{pkg_install_name}' from '{target_mcp_config_file_path}' (IDE: {target_ide})?"
-
-    if not non_interactive: # Always confirm in interactive mode, or if not specified but not non_interactive
-        if not click.confirm(confirmation_message, default=True):
+        confirmation_message = f"This will REMOVE the configuration for package '{pkg_install_name}' (IDE: {target_ide}) from the file: {target_mcp_config_file_path}."
+    
+    if not non_interactive: # Always confirm in interactive mode
+        if not click.confirm(f"{confirmation_message}\nProceed?", default=True):
             click.echo("Operation cancelled by user.")
             return
-    elif non_interactive and not click.get_current_context().params.get('yes'): # For non-interactive, require --yes or similar if we add it
-        click.echo(f"Run with --yes or in interactive mode to confirm: {confirmation_message}")
-        # For now, non-interactive implies confirmation by providing all flags. A --yes flag would be better.
-        # Let's proceed if non_interactive, but a future --yes flag would be good.
-        pass 
+    # In non-interactive, providing all flags implies confirmation for now.
+    # A future --yes flag would make this more explicit.
 
     if action == 'add':
-        click.echo(f"Attempting to 'add' configuration for '{pkg_install_name}' (key) to '{target_mcp_config_file_path}' for IDE '{target_ide}'.")
+        click.echo(f"Adding/Updating configuration for '{pkg_install_name}' in '{target_mcp_config_file_path}' for IDE '{target_ide}'...")
         success = update_mcp_config_file_for_configure(
-            target_mcp_config_file_path,
-            pkg_install_name, 
-            config_snippet_obj,
-            pkg_install_path
+            config_path=target_mcp_config_file_path,
+            server_key_in_target=pkg_install_name, # Use the DB install_name as the key
+            config_snippet_obj=config_snippet_obj,
+            package_install_path=pkg_install_path
         )
         if success:
-            click.echo(f"Configuration for '{pkg_install_name}' successfully added/updated for '{target_ide}'.")
+            click.echo(f"Successfully ADDED/UPDATED configuration for '{pkg_install_name}' for IDE '{target_ide}'.")
         else:
-            click.echo(f"Failed to add/update configuration for '{pkg_install_name}' for '{target_ide}'.", err=True)
+            click.echo(f"FAILED to add/update configuration for '{pkg_install_name}' for IDE '{target_ide}'.", err=True)
 
     elif action == 'remove':
-        click.echo(f"Attempting to 'remove' configuration for '{pkg_install_name}' (key) from '{target_mcp_config_file_path}' for IDE '{target_ide}'.")
+        click.echo(f"Removing configuration for '{pkg_install_name}' from '{target_mcp_config_file_path}' for IDE '{target_ide}'...")
         success = remove_server_from_mcp_config(
-            target_mcp_config_file_path,
-            pkg_install_name 
+            config_path=target_mcp_config_file_path,
+            server_short_name=pkg_install_name # Use the DB install_name as the key to remove
         )
         if success:
-            click.echo(f"Configuration for '{pkg_install_name}' successfully removed for '{target_ide}'.")
+            click.echo(f"Successfully REMOVED configuration for '{pkg_install_name}' for IDE '{target_ide}'.")
         else:
-            click.echo(f"Failed to remove configuration for '{pkg_install_name}' for '{target_ide}'. Check if it existed.", err=True)
+            click.echo(f"FAILED to remove configuration for '{pkg_install_name}' for IDE '{target_ide}'. Check if it existed or if there was a file access issue.", err=True)
     else:
-        click.echo(f"Error: Unknown action '{action}'. Should have been caught earlier.", err=True)
+        # This case should ideally not be reached due to click.Choice and interactive selection
+        click.echo(f"Error: Unknown action '{action}'. This should have been caught earlier.", err=True)
         sys.exit(1)
+
 
 if __name__ == '__main__':
     cli()
