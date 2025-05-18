@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Package Details - MCPM Registry</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1><i class="fas fa-box"></i> MCPM Registry</h1>
+            <nav>
+                <ul>
+                    <li><a href="index.html"><i class="fas fa-home"></i> Home</a></li>
+                    <li><a href="index.html#publish"><i class="fas fa-upload"></i> Publish</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container">
+        <div id="loading-message" class="message">Loading package details...</div>
+        <div id="error-message" class="error" style="display: none;"></div>
+
+        <div id="package-details" style="display: none;">
+            <div class="package-header">
+                <h2 id="package-name"></h2>
+                <div class="package-badges">
+                    <span id="package-version" class="badge badge-primary"></span>
+                    <span id="package-downloads" class="badge badge-secondary"></span>
+                </div>
+            </div>
+
+            <div class="package-meta-info">
+                <div class="meta-item" id="author-info">
+                    <i class="fas fa-user"></i> <span id="package-author">Unknown</span>
+                </div>
+                <div class="meta-item" id="updated-info">
+                    <i class="fas fa-calendar-alt"></i> <span id="package-updated">Unknown</span>
+                </div>
+            </div>
+
+            <div class="package-description-full" id="package-description">
+                No description available.
+            </div>
+
+            <div class="package-actions-large">
+                <button id="download-btn" class="btn btn-primary">
+                    <i class="fas fa-download"></i> Download Package
+                </button>
+                <button id="install-cmd-btn" class="btn">
+                    <i class="fas fa-terminal"></i> Show Install Command
+                </button>
+            </div>
+
+            <div id="install-command" class="info-card" style="display: none;">
+                <h3>Installation</h3>
+                <p>Run the following command to install this package:</p>
+                <pre><code id="install-cmd-text">mcpm install <span id="package-name-cmd"></span></code></pre>
+                <button id="copy-cmd-btn" class="btn btn-sm">
+                    <i class="fas fa-copy"></i> Copy
+                </button>
+            </div>
+
+            <div class="package-section">
+                <h3>Version History</h3>
+                <table class="version-table">
+                    <thead>
+                        <tr>
+                            <th>Version</th>
+                            <th>Released</th>
+                            <th>Download</th>
+                        </tr>
+                    </thead>
+                    <tbody id="version-history">
+                        <!-- Version history will be populated here -->
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="package-section" id="dependencies-section" style="display: none;">
+                <h3>Dependencies</h3>
+                <ul id="dependencies-list">
+                    <!-- Dependencies will be populated here -->
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>MCPM Registry - Model Context Protocol Manager</p>
+        </div>
+    </footer>
+
+    <script src="package-details.js"></script>
+</body>
+</html>

@@ -5,45 +5,68 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCPM Registry</title>
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
 </head>
 <body>
-    <h1>MCPM Package Registry</h1>
+    <div class="container">
+        <h1><i class="fas fa-box-open"></i> MCPM Package Registry</h1>
 
     <section id="package-list-section">
-        <h2>Available Packages (Latest Versions)</h2>
+        <h2><i class="fas fa-cubes"></i> Available Packages</h2>
+        <div class="search-container">
+            <input type="text" id="package-search" placeholder="Search packages..." class="search-input">
+        </div>
         <ul id="package-list"></ul>
-        <p id="list-loading-message">Loading packages...</p>
+        <p id="list-loading-message"><i class="fas fa-spinner fa-spin"></i> Loading packages...</p>
         <p id="list-error-message" class="error"></p>
     </section>
 
     <hr>
 
     <section id="publish-section">
-        <h2>Publish New Package</h2>
+        <h2><i class="fas fa-upload"></i> Publish New Package</h2>
         <form id="publish-form">
-            <label for="package-file">Package File (.zip):</label><br>
-            <input type="file" id="package-file" name="package" accept=".zip" required><br><br>
+            <div class="form-group">
+                <label for="package-file">Package File (.zip or .mcpz):</label>
+                <input type="file" id="package-file" name="package" accept=".zip,.mcpz" required>
+                <small>Upload a package file in .zip or .mcpz format</small>
+            </div>
 
-            <label for="metadata">Metadata (mcp_package.json content):</label><br>
-            <textarea id="metadata" name="metadata" rows="10" cols="50" required placeholder='{
+            <div class="form-group">
+                <label for="metadata">Metadata (mcp_package.json content):</label>
+                <textarea id="metadata" name="metadata" rows="10" required placeholder='{
   "name": "package-name",
   "version": "0.1.0",
-  "description": "...",
-  "entrypoint": "...",
-  "author": "...",
-  "license": "..."
-}'></textarea><br><br>
+  "description": "A description of your package",
+  "entrypoint": "main.js",
+  "author": "Your Name",
+  "license": "MIT",
+  "runtime": "node"
+}'></textarea>
+                <small>Paste the contents of your mcp_package.json file here</small>
+            </div>
 
-            <button type="submit">Publish Package</button>
+            <button type="submit"><i class="fas fa-cloud-upload-alt"></i> Publish Package</button>
         </form>
-        <p id="publish-status-message"></p>
+        <p id="publish-status-message" class="success"></p>
         <p id="publish-error-message" class="error"></p>
     </section>
 
-    <hr>
+    <section id="server-info-section">
+        <h2><i class="fas fa-server"></i> Registry Information</h2>
+        <div class="info-card">
+            <p><strong>Registry URL:</strong> <code id="registry-url">http://localhost:8000/api</code></p>
+            <p><strong>CLI Usage:</strong></p>
+            <pre><code>mcpm install &lt;package-name&gt;
+mcpm publish &lt;package-file&gt;</code></pre>
+            <p><strong>Status:</strong> <span class="badge badge-success">Online</span></p>
+        </div>
+    </section>
 
-
-
+    <footer>
+        <p>&copy; 2025 MCPM Registry. All rights reserved.</p>
+    </footer>
+    </div>
     <script src="script.js"></script>
 </body>
 </html>
