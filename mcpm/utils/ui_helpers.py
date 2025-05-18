@@ -36,37 +36,65 @@ def _display_package_details_interactive(package_name, all_packages_data, instal
             installed_date = installed_packages_info[package_name].get('installed_at', 'Unknown')
             
             click.clear()
-            click.echo(f"=== Package Details: {package_name} ===")
-            click.echo(f"Version: {pkg_version}")
-            click.echo(f"Status: Installed (Local only)")
-            click.echo(f"Installation Path: {pkg_path}")
-            click.echo(f"Installed On: {installed_date}")
+            click.echo("Package Details:")
+            click.echo(f"Name:        {package_name}")
             
             # Check for mcp_package.json to get more details
             metadata_path = Path(pkg_path) / "mcp_package.json"
+            description = "No description available"
+            author = "Unknown"
+            license_info = "Unknown"
+            runtime = "Unknown"
+            source_url = ""
+            homepage = ""
+            
             if metadata_path.exists():
                 try:
                     with open(metadata_path, "r") as f:
                         metadata = json.load(f)
                     
-                    # Display additional metadata if available
+                    # Extract metadata if available
                     if "description" in metadata:
-                        click.echo(f"Description: {metadata['description']}")
+                        description = metadata['description']
                     if "author" in metadata:
-                        click.echo(f"Author: {metadata['author']}")
+                        author = metadata['author']
                     if "license" in metadata:
-                        click.echo(f"License: {metadata['license']}")
+                        license_info = metadata['license']
+                    if "runtime" in metadata:
+                        runtime = metadata['runtime']
+                    if "source_url" in metadata:
+                        source_url = metadata['source_url']
                     if "homepage" in metadata:
-                        click.echo(f"Homepage: {metadata['homepage']}")
+                        homepage = metadata['homepage']
                 except Exception as e:
                     click.echo(f"Error reading package metadata: {e}", err=True)
             
+            click.echo(f"Description: {description}")
+            
+            vendor_info = author
+            if homepage and not homepage.startswith("http"):
+                vendor_info += f" ({homepage})"
+            click.echo(f"Vendor:      {vendor_info}")
+            
+            click.echo(f"License:     {license_info}")
+            click.echo(f"Runtime:     {runtime}")
+            
+            if source_url:
+                click.echo(f"Source:      {source_url}")
+            if homepage and homepage.startswith("http"):
+                click.echo(f"Homepage:    {homepage}")
+                
+            click.echo(f"Status:      Installed (Local only)")
+            click.echo(f"Version:     {pkg_version}")
+            click.echo(f"Path:        {pkg_path}")
+            click.echo(f"Installed:   {installed_date}")
+            
             # Management options
             actions = [
-                questionary.Choice(title="Uninstall Package", value="uninstall"),
-                questionary.Choice(title="Configure for IDE", value="configure"),
-                questionary.Choice(title="Back to Package List", value="back"),
-                questionary.Choice(title="Exit MCPM", value="exit")
+                questionary.Choice(title="📦 Uninstall this package", value="uninstall"),
+                questionary.Choice(title="⚙️  Configure for IDE", value="configure"),
+                questionary.Choice(title="⬅️  Back to list", value="back"),
+                questionary.Choice(title="❌ Exit", value="exit")
             ]
             
             action = questionary.select(
@@ -109,45 +137,50 @@ def _display_package_details_interactive(package_name, all_packages_data, instal
     
     # Display package details
     click.clear()
-    click.echo(f"=== Package Details: {pkg_name} ===")
-    click.echo(f"Version: {pkg_version}")
-    click.echo(f"Status: {'Installed' if is_installed else 'Not Installed'}")
+    click.echo("Package Details:")
+    click.echo(f"Name:        {pkg_name}")
+    click.echo(f"Description: {pkg_description}")
+    
+    vendor_info = pkg_author
+    if pkg_homepage and not pkg_homepage.startswith("http"):
+        vendor_info += f" ({pkg_homepage})"
+    click.echo(f"Vendor:      {vendor_info}")
+    
+    click.echo(f"License:     {pkg_license}")
+    click.echo(f"Runtime:     {pkg_runtime}")
+    
+    if pkg_source_url:
+        click.echo(f"Source:      {pkg_source_url}")
+    if pkg_homepage and pkg_homepage.startswith("http"):
+        click.echo(f"Homepage:    {pkg_homepage}")
+    
+    click.echo(f"Status:      {'Installed' if is_installed else 'Not installed'}")
     
     if is_installed:
         pkg_path = installed_packages_info[package_name].get('install_path', 'Unknown')
         installed_version = installed_packages_info[package_name].get('version', 'Unknown')
         installed_date = installed_packages_info[package_name].get('installed_at', 'Unknown')
-        click.echo(f"Installed Version: {installed_version}")
-        click.echo(f"Installation Path: {pkg_path}")
-        click.echo(f"Installed On: {installed_date}")
-    
-    click.echo(f"Description: {pkg_description}")
-    click.echo(f"Author: {pkg_author}")
-    click.echo(f"License: {pkg_license}")
-    click.echo(f"Runtime: {pkg_runtime}")
-    
-    if pkg_source_url:
-        click.echo(f"Source URL: {pkg_source_url}")
-    if pkg_homepage:
-        click.echo(f"Homepage: {pkg_homepage}")
+        click.echo(f"Version:     {installed_version}")
+        click.echo(f"Path:        {pkg_path}")
+        click.echo(f"Installed:   {installed_date}")
     
     # Management options
     actions = []
     
     if is_installed:
-        actions.append(questionary.Choice(title="Uninstall Package", value="uninstall"))
-        actions.append(questionary.Choice(title="Configure for IDE", value="configure"))
+        actions.append(questionary.Choice(title="📦 Uninstall this package", value="uninstall"))
+        actions.append(questionary.Choice(title="⚙️  Configure for IDE", value="configure"))
     else:
-        actions.append(questionary.Choice(title="Install Package", value="install"))
+        actions.append(questionary.Choice(title="📦 Install this package", value="install"))
     
     if pkg_source_url:
-        actions.append(questionary.Choice(title="Open Source URL", value="source_url"))
-    if pkg_homepage:
-        actions.append(questionary.Choice(title="Open Homepage", value="homepage"))
+        actions.append(questionary.Choice(title="🔗 Open source URL", value="source_url"))
+    if pkg_homepage and pkg_homepage.startswith("http"):
+        actions.append(questionary.Choice(title="🔗 Open homepage", value="homepage"))
     
     actions.extend([
-        questionary.Choice(title="Back to Package List", value="back"),
-        questionary.Choice(title="Exit MCPM", value="exit")
+        questionary.Choice(title="⬅️  Back to list", value="back"),
+        questionary.Choice(title="❌ Exit", value="exit")
     ])
     
     action = questionary.select(
