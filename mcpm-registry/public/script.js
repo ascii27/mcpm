@@ -83,7 +83,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Format the package name and version
                 const nameSpan = document.createElement('span');
                 nameSpan.className = 'package-name';
-                nameSpan.innerHTML = `<strong>${pkg.name}</strong> `;
+                
+                // Make package name clickable
+                const nameLink = document.createElement('a');
+                nameLink.href = `package-details.html?name=${pkg.name}`;
+                nameLink.innerHTML = `<strong>${pkg.name}</strong>`;
+                nameSpan.appendChild(nameLink);
+                nameSpan.appendChild(document.createTextNode(' '));
+                
                 if (pkg.latest_version) {
                     const versionBadge = document.createElement('span');
                     versionBadge.className = 'badge badge-primary';

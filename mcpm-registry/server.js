@@ -294,6 +294,185 @@ app.get('/api/packages/:name/:version/download', (req, res) => {
 
 
 
+// --- GET Package Details ---
+
+// GET /api/packages/:name - Get details for a specific package
+app.get('/api/packages/:name', (req, res) => {
+    const packageName = req.params.name;
+    
+    // Query to get the latest version of the package
+    const sql = `
+        SELECT p1.*, 
+               (SELECT COUNT(*) FROM packages WHERE install_name = p1.install_name) as version_count,
+               (SELECT COUNT(*) FROM downloads WHERE package_name = p1.install_name) as download_count
+        FROM packages p1
+        LEFT JOIN packages p2 ON p1.install_name = p2.install_name AND p1.upload_time < p2.upload_time
+        WHERE (p1.install_name = ? OR p1.name = ?) AND p2.id IS NULL
+    `;
+    
+    db.get(sql, [packageName, packageName], (err, row) => {
+        if (err) {
+            console.error(`Error fetching package ${packageName}:`, err.message);
+            return res.status(500).json({ error: "Internal server error", details: err.message });
+        }
+        
+        if (!row) {
+            return res.status(404).json({ error: `Package ${packageName} not found.` });
+        }
+        
+        // Format the response
+        const packageDetails = {
+            name: row.name,
+            install_name: row.install_name,
+            latest_version: row.version,
+            description: row.description,
+            author: row.author,
+            license: row.license,
+            entrypoint: row.entrypoint,
+            version_count: row.version_count,
+            download_count: row.download_count || 0,
+            updated_at: row.upload_time
+        };
+        
+        res.json(packageDetails);
+    });
+});
+
+// GET /api/packages/:name/versions - Get all versions of a package
+app.get('/api/packages/:name/versions', (req, res) => {
+    const packageName = req.params.name;
+    
+    // Query to get all versions of the package
+    const sql = `
+        SELECT version, upload_time as released_at,
+               (SELECT COUNT(*) FROM downloads WHERE package_name = p.install_name AND package_version = p.version) as download_count
+        FROM packages p
+        WHERE install_name = ? OR name = ?
+        ORDER BY upload_time DESC
+    `;
+    
+    db.all(sql, [packageName, packageName], (err, rows) => {
+        if (err) {
+            console.error(`Error fetching versions for package ${packageName}:`, err.message);
+            return res.status(500).json({ error: "Internal server error", details: err.message });
+        }
+        
+        if (rows.length === 0) {
+            return res.status(404).json({ error: `Package ${packageName} not found.` });
+        }
+        
+        // Format the response
+        const versions = rows.map(row => ({
+            version: row.version,
+            released_at: row.released_at,
+            download_count: row.download_count || 0
+        }));
+        
+        res.json(versions);
+    });
+});
+
+// --- Track Downloads ---
+
+// Create downloads table if it doesn't exist
+db.serialize(() => {
+    db.run(`CREATE TABLE IF NOT EXISTS downloads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        package_name TEXT NOT NULL,
+        package_version TEXT NOT NULL,
+        download_time DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`, (err) => {
+        if (err) {
+            console.error("Error creating downloads table", err.message);
+        } else {
+            console.log("Downloads table ready.");
+        }
+    });
+});
+
+// Modify the download endpoint to track downloads
+app.get('/api/packages/:name/:version/download', (req, res) => {
+    const { name } = req.params;
+    let version = req.params.version;
+
+    const findAndSendFile = (packageName, packageVersion) => {
+        // Try to find by install_name first, then by display name
+        const sql = `SELECT filename, install_name FROM packages WHERE (install_name = ? OR name = ?) AND version = ?`;
+        db.get(sql, [packageName, packageName, packageVersion], (err, row) => {
+            if (err) {
+                console.error(`Error finding package ${packageName} v${packageVersion}:`, err.message);
+                return res.status(500).json({ error: "Internal server error finding package", details: err.message });
+            }
+            if (!row) {
+                return res.status(404).json({ error: `Package ${packageName} version ${packageVersion} not found.` });
+            }
+
+            const filename = row.filename;
+            const installName = row.install_name;
+            const filePath = path.join(UPLOAD_DIR, filename);
+
+            // Record the download
+            const downloadSql = `INSERT INTO downloads (package_name, package_version) VALUES (?, ?)`;
+            db.run(downloadSql, [installName, packageVersion], (downloadErr) => {
+                if (downloadErr) {
+                    console.error(`Error recording download for ${packageName} v${packageVersion}:`, downloadErr.message);
+                    // Continue with download even if tracking fails
+                }
+            });
+
+            // Check if file exists before sending
+            fsPromises.access(filePath, fs.constants.R_OK).catch((err) => {
+                console.error(`File not found or unreadable: ${filePath}`, err);
+                return res.status(404).json({ error: `Package file for ${packageName} version ${packageVersion} not found on server.` });
+            }).then(() => {
+                // Set headers for file download
+                res.setHeader('Content-Disposition', `attachment; filename="${packageName}-${packageVersion}.mcpz"`);
+                res.setHeader('Content-Type', 'application/octet-stream');
+
+                // Stream the file
+                const fileStream = fs.createReadStream(filePath);
+                fileStream.pipe(res);
+
+                fileStream.on('error', (streamErr) => {
+                    console.error(`Error streaming file ${filePath}:`, streamErr);
+                    if (!res.headersSent) {
+                        res.status(500).json({ error: "Error reading package file." });
+                    }
+                });
+
+                fileStream.on('close', () => {
+                    console.log(`Sent file ${filePath} for ${packageName} v${packageVersion}`);
+                });
+            });
+        });
+    };
+
+    if (version.toLowerCase() === 'latest') {
+        // Query for the latest version based on upload_time, matching by install_name or name
+        const latestVersionSql = `SELECT version, install_name, name
+                                  FROM packages
+                                  WHERE install_name = ? OR name = ?
+                                  ORDER BY upload_time DESC
+                                  LIMIT 1`;
+        db.get(latestVersionSql, [name, name], (err, row) => {
+            if (err) {
+                console.error(`Error finding latest version for package ${name}:`, err.message);
+                return res.status(500).json({ error: "Internal server error finding latest version", details: err.message });
+            }
+            if (!row) {
+                return res.status(404).json({ error: `Package ${name} not found.` });
+            }
+            const latestVersion = row.version;
+            const resolvedName = row.install_name || row.name;
+            console.log(`Request for latest version of ${name}, resolved to ${latestVersion} (resolved name: ${resolvedName})`);
+            findAndSendFile(resolvedName, latestVersion);
+        });
+    } else {
+        // Use the specific version provided
+        findAndSendFile(name, version);
+    }
+});
+
 // --- DELETE Endpoints ---
 
 // Delete a package (all versions) and its files
