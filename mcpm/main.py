@@ -965,13 +965,8 @@ def list_items(non_interactive, search):
             elif result == 'details_refresh':
                 continue  # Show the same package details again
             
-        # Add search option
+        # Initialize search query
         search_query = None
-        if packages_data and len(packages_data) > 5:  # Only show search if there are enough packages
-            if questionary.confirm("Would you like to search for a package?", default=False).ask():
-                search_query = questionary.text("Enter search term (name, description, author):").ask()
-                if search_query:
-                    click.echo(f"Searching for packages matching '{search_query}'...")
         
         # Build the main package list
         choices = []
@@ -1078,9 +1073,15 @@ def list_items(non_interactive, search):
             else:
                 break
 
-        # Add exit option
+        # Add search, clear search (if active), and exit options
+        choices.append(questionary.Separator())
+        
+        # Add clear search option if search is active
+        if search_query:
+            choices.append(questionary.Choice(title=f"🗑 Clear search filter '{search_query}'", value="clear_search"))
+            
         choices.extend([
-            questionary.Separator(),
+            questionary.Choice(title="🔍 Search packages", value="search_packages"),
             questionary.Choice(title="❌ Exit mcpm", value="exit_mcpm")
         ])
 
@@ -1092,9 +1093,27 @@ def list_items(non_interactive, search):
         ).ask()
 
         # Handle selection
-        if not selected_value or selected_value == "exit_mcpm":
+        if not selected_value:
+            click.echo("No selection made. Exiting.")
+            break
+        elif selected_value == "exit_mcpm":
             click.echo("Exiting mcpm.")
             break
+        elif selected_value == "search_packages":
+            # Prompt for search term
+            search_query = questionary.text("Enter search term (name, description, author):").ask()
+            if search_query:
+                click.echo(f"Searching for packages matching '{search_query}'...")
+            else:
+                # If search is cancelled or empty, clear any previous search
+                search_query = None
+                click.echo("Search cancelled. Showing all packages.")
+            continue  # Refresh the list with the search filter
+        elif selected_value == "clear_search":
+            # Clear the search filter
+            search_query = None
+            click.echo("Search filter cleared. Showing all packages.")
+            continue  # Refresh the list without the search filter
         else:
             # Set the package name for details view in the next loop iteration
             current_package_to_detail = selected_value
