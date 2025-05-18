@@ -31,7 +31,7 @@ def list_items(non_interactive, search=None):
     
     if non_interactive:
         # Non-interactive mode: just list packages and servers
-        click.echo("=== MCP Packages ===")
+        click.echo("📦 MCP Packages")
         if all_packages_data:
             for pkg in all_packages_data:
                 pkg_name = pkg.get("name", "Unknown Package Name")
@@ -41,7 +41,7 @@ def list_items(non_interactive, search=None):
 
                 # Determine installation status
                 is_installed = pkg_name in installed_packages_info
-                install_status = "🟢 " if is_installed else "- "
+                install_status = "📦 " if is_installed else "  "
                 
                 # Format display with name, version, status, then details
                 line_parts = [f"{install_status}{pkg_name} (v{pkg_version})"]
@@ -72,15 +72,15 @@ def list_items(non_interactive, search=None):
         # List local-only packages
         local_only_packages = [pkg for pkg in installed_packages if pkg["name"] not in [p.get("name") for p in (all_packages_data or [])]]
         if local_only_packages:
-            click.echo("\n=== Local-only Packages (not in registry) ===")
+            click.echo("\n📁 Local-only Packages (not in registry)")
             for pkg in local_only_packages:
                 pkg_name = pkg["name"]
                 pkg_version = pkg["version"]
                 pkg_path = pkg["install_path"]
-                click.echo(f"{pkg_name} (v{pkg_version}) 🟢 : Local only - {pkg_path}")
+                click.echo(f"📦 {pkg_name} (v{pkg_version}) [Local only] - {pkg_path}")
         
         # List servers
-        click.echo("\n=== MCP Servers ===")
+        click.echo("\n🖥️  MCP Servers")
         if servers_data:
             for server in servers_data:
                 server_reg_name = server.get('registry_name', 'Unknown Server Name')
@@ -88,7 +88,7 @@ def list_items(non_interactive, search=None):
                 
                 # Determine installation status
                 is_installed = server_reg_name in installed_packages_info
-                install_status = "🟢 " if is_installed else "- "
+                install_status = "🖥️  " if is_installed else "   "
                 
                 # Build display parts with name, version, status, then details
                 display_parts = [f"{install_status}{server_reg_name}"]  
@@ -109,7 +109,7 @@ def list_items(non_interactive, search=None):
     # Interactive mode
     while True:
         click.clear()
-        click.echo("=== MCP Package Manager ===")
+        click.echo("🔧 MCP Package Manager")
         
         # Prepare choices for questionary
         choices = []
@@ -121,8 +121,8 @@ def list_items(non_interactive, search=None):
             
             # Add clear search option if search is active
             if search:
-                choices.append(questionary.Choice(title="❌ Clear search", value="clear_search"))
-                click.echo(f"Filtering results for: '{search}'")
+                choices.append(questionary.Choice(title="🔄 Clear search", value="clear_search"))
+                click.echo(f"🔍 Filtering results for: '{search}'")
             
             # Filter packages based on search query if provided
             filtered_packages = all_packages_data
@@ -149,12 +149,11 @@ def list_items(non_interactive, search=None):
                 display_version = installed_packages_info[pkg_name].get('version', pkg_version) if is_installed else pkg_version
                 
                 # Build title parts with name, version, then status
-                status_icon = "🟢" if is_installed else "-"
+                status_icon = "📦" if is_installed else "  "
                 
                 # Format title with name, version, status, then description
                 title_parts = [
-                    f"{pkg_name} (v{display_version})",
-                    status_icon
+                    f"{status_icon} {pkg_name} (v{display_version})"
                 ]
                 
                 # Add truncated description if available
@@ -180,7 +179,7 @@ def list_items(non_interactive, search=None):
         # Add local-only packages
         local_only_packages = [pkg for pkg in installed_packages if pkg["name"] not in [p.get("name") for p in (all_packages_data or [])]]
         if local_only_packages:
-            choices.append(questionary.Choice(title="=== Local-only Packages ===", value="local_header", disabled=True))
+            choices.append(questionary.Choice(title="📁 Local-only Packages", value="local_header", disabled=True))
             
             # Filter local packages based on search query if provided
             filtered_local_packages = local_only_packages
@@ -199,9 +198,8 @@ def list_items(non_interactive, search=None):
                 
                 # Format title with name, version, status, then details
                 title_parts = [
-                    f"{pkg_name} (v{pkg_version})",
-                    "🟢",
-                    "- Local only"
+                    f"📦 {pkg_name} (v{pkg_version})",
+                    "[Local only]"
                 ]
                 
                 # No author information for local-only packages
@@ -215,7 +213,7 @@ def list_items(non_interactive, search=None):
                 choices.append(questionary.Choice(title="No local packages match your search", value="no_local_results", disabled=True))
         
         # Add exit option
-        choices.append(questionary.Choice(title="Exit MCPM", value="exit"))
+        choices.append(questionary.Choice(title="❌ Exit MCPM", value="exit"))
         
         # Show selection menu
         selection = questionary.select(
