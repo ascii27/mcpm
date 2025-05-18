@@ -141,8 +141,8 @@ document.addEventListener('DOMContentLoaded', () => {
         // Set description
         packageDescriptionEl.textContent = packageData.description || 'No description available';
         
-        // Set install command
-        packageNameCmd.textContent = packageData.name;
+        // Set install command with the normalized package_name (for installation)
+        packageNameCmd.textContent = packageData.package_name;
         
         // Set dependencies if available
         if (packageData.dependencies && Object.keys(packageData.dependencies).length > 0) {

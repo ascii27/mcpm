@@ -340,6 +340,94 @@ form button:active,
     font-family: monospace;
 }
 
+/* Package details page styles */
+.package-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    border-bottom: 1px solid #e9ecef;
+    padding-bottom: 15px;
+}
+
+.package-header h2 {
+    margin: 0;
+    color: #343a40;
+}
+
+.package-badges {
+    display: flex;
+    gap: 10px;
+}
+
+.package-meta-info {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 20px;
+    color: #6c757d;
+}
+
+.meta-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.package-description-full {
+    margin-bottom: 30px;
+    line-height: 1.6;
+}
+
+.package-actions-large {
+    display: flex;
+    gap: 15px;
+    margin-bottom: 30px;
+}
+
+.package-section {
+    margin-top: 40px;
+    margin-bottom: 40px;
+}
+
+.package-section h3 {
+    border-bottom: 1px solid #e9ecef;
+    padding-bottom: 10px;
+    margin-bottom: 20px;
+}
+
+.version-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.version-table th,
+.version-table td {
+    padding: 12px 15px;
+    text-align: left;
+    border-bottom: 1px solid #e9ecef;
+}
+
+.version-table th {
+    background-color: #f8f9fa;
+    font-weight: 600;
+}
+
+.version-table tr:hover {
+    background-color: #f8f9fa;
+}
+
+/* Make package names in the list clickable */
+.package-name a {
+    color: #343a40;
+    text-decoration: none;
+    transition: color 0.2s;
+}
+
+.package-name a:hover {
+    color: #007bff;
+    text-decoration: underline;
+}
+
 /* Footer */
 footer {
     text-align: center;
