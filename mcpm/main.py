@@ -8,6 +8,7 @@ import shutil
 import sys
 import re
 from pathlib import Path
+import questionary
 import sqlite3
 
 # --- Constants ---
@@ -319,6 +320,24 @@ def create_package_archive(output_filename, source_dir='.'):
             os.remove(output_filename)
         return False
 
+
+def get_all_installed_package_details():
+    """Fetches details for all installed packages from the local database."""
+    conn = None
+    try:
+        conn = _get_local_db_connection()
+        cursor = conn.cursor()
+        # Ensure all columns expected by list_items are selected
+        cursor.execute("SELECT name, version, install_path, installed_at FROM installed_packages")
+        packages = cursor.fetchall()
+        return packages
+    except sqlite3.Error as e:
+        click.echo(f"Database error while fetching installed package details: {e}", err=True)
+        return [] # Return empty list on error to prevent crash
+    finally:
+        if conn:
+            conn.close()
+
 # --- JSON Update Logic (MODIFIED) ---
 def update_mcp_config_file(config_path: Path, server_registry_name: str, server_config_str: str):
     """Reads, updates, and writes the target MCP JSON configuration file.
@@ -470,379 +489,159 @@ def cli():
     """Model Context Protocol Manager (MCPM)"""
     pass
 
-@cli.command("list", help="List registered packages and servers.")
-def list_items():
-    """Fetches and lists both packages and servers from the registry."""
+@cli.command(name="list")
+@click.option('--non-interactive', is_flag=True, help="Display packages without interactive mode.")
+def list_items(non_interactive):
+    """Fetches and lists both packages and servers from the registry.
+    In interactive mode (default), allows management of packages.
+    """
     init_local_db() # Ensure DB is initialized
     click.echo("Fetching data from registry...")
 
-    all_items = []
+    if non_interactive:
+        # --- Non-Interactive Mode: Lists both packages and servers --- 
+        all_items = []
+        installed_db_packages = {p[0]: p for p in get_all_installed_package_details()} # name: (name, version, path, date)
 
-    # Fetch Servers
-    servers = get_registry_servers()
-    if servers:
-        for server in servers:
-            all_items.append({
-                'type': 'Server',
-                'display_name': server.get('display_name', 'Unknown Server'), # The user-friendly name
-                'registry_name': server.get('registry_name', 'N/A'), # The name used for install
-                'language': server.get('language', 'N/A')
-            })
-    elif servers is None: # Handle fetch error
-         click.echo("Warning: Could not retrieve server list.", err=True)
-
-    # Fetch Packages
-    packages = get_registry_packages()
-    if packages:
-        for pkg in packages:
-            all_items.append({
-                'type': 'Package',
-                'name': pkg.get('name', 'Unknown Package'),
-                'install_name': pkg.get('install_name', 'N/A'),
-                'latest_version': pkg.get('latest_version', pkg.get('version', 'N/A')),
-                'version': pkg.get('version', 'N/A')
-            })
-    elif packages is None: # Handle fetch error
-        click.echo("Warning: Could not retrieve package list.", err=True)
-
-    # Sort combined list primarily by type, then by name/display_name
-    all_items.sort(key=lambda x: (x['type'], x.get('name', x.get('display_name', ''))))
-
-    click.echo(f"{'Type':<10} {'Display Name':<30} {'Install Name / Version':<30} {'Details':<20}")
-    click.echo("-" * 90)
-
-    for item in all_items:
-        if item['type'] == 'Package':
-            name = item.get('name', 'N/A')
-            install_name = item.get('install_name', 'N/A')
-            version = item.get('latest_version', item.get('version', 'N/A'))
-            status_marker = "[INSTALLED]" if install_name != 'N/A' and is_package_installed(install_name) else ""
-            click.echo(f"{item['type']:<10} {name:<30} {install_name + ' / ' + str(version):<30} {status_marker}")
-        elif item['type'] == 'Server':
-            display_name = item.get('display_name', 'N/A')
-            registry_name = item.get('registry_name', 'N/A') # This is the install name
-            language = item.get('language', 'N/A')
-            click.echo(f"{item['type']:<10} {display_name:<30} {registry_name:<30} (Lang: {language})")
-
-@cli.command()
-@click.argument('package_name') # This name can be a package name or a server registry_name
-@click.option('--target', default=None, help='Target tool to add server configuration to (e.g., "windsurf").')
-def install(package_name, target):
-    """Installs a package or configures a registered server (optionally adding config to a target tool)."""
-    registry_url = get_registry_url()
-    if not registry_url:
-        click.echo("Error: MCPM_REGISTRY_URL is not set.", err=True)
-        sys.exit(1)
-
-    click.echo(f"Checking registry for server or package: {package_name}...")
-
-    # 1. Check if it's a registered server (using registry_name)
-    server_info = get_registry_server(package_name) # Pass the name directly
-    if server_info:
-        click.echo(f"Found registered server '{package_name}' (Display: {server_info.get('display_name', 'N/A')}).")
-        # Output the configuration command associated with the server
-        config_command_str = server_info.get('config_command')
-        if not config_command_str:
-            click.echo(f"Warning: Server '{package_name}' is registered but has no configuration command defined.", err=True)
-            # Decide if we should still attempt target update? Probably not.
-            sys.exit(1) # Exit if no config command
-
-        # Try to parse the server config string into JSON upfront
-        try:
-            server_config_json = json.loads(config_command_str)
-            if not isinstance(server_config_json, dict):
-                 click.echo(f"Error: Configuration for server '{package_name}' is not a valid JSON object.", err=True)
-                 sys.exit(1)
-        except json.JSONDecodeError:
-            click.echo(f"Error: Configuration for server '{package_name}' is not valid JSON.", err=True)
-            # Print the raw string for manual inspection if desired
-            click.echo("\nRaw configuration string:")
-            click.echo("-" * 20)
-            click.echo(config_command_str)
-            click.echo("-" * 20)
-            sys.exit(1)
-
-        # --- Target Tool Integration ---
-        if target:
-            target_path = get_target_config_path(target)
-            if target_path:
-                click.echo(f"Attempting to add configuration to target '{target}' at {target_path}...")
-                if not update_mcp_config_file(target_path, package_name, server_info.get('config_command')):
-                     # Error message already printed by update_mcp_config_file
-                     click.echo("Failed to automatically update target configuration file.", err=True)
-                     # Optionally print config anyway?
-                # Regardless of success/failure of update, we are done with server install
-                return
-            else:
-                click.echo(f"Warning: Unknown target tool '{target}'. No configuration file path defined.", err=True)
-                # Fall through to printing config instead
-
-        # --- Default Behavior: Print Config ---
-        click.echo("\nServer configuration retrieved. Add this to your target tool's MCP config:")
-        click.echo("-" * 20)
-        # We already parsed it, so dump the parsed version prettily
-        pretty_json = json.dumps(server_config_json, indent=2)
-        click.echo(pretty_json)
-        click.echo("-" * 20)
-        # Add hint about --target
-        click.echo(f"\nHint: Use `mcpm install {package_name} --target <tool_name>` (e.g., --target windsurf) to attempt automatic configuration.")
-        return # Successfully handled as a server
-
-    # 2. If not a server, attempt to install as a package (Keep existing package install logic)
-    click.echo(f"'{package_name}' not found as a registered server. Attempting to install as a package...")
-    package_dir = INSTALL_DIR # Use the expanded path constant
-    os.makedirs(package_dir, exist_ok=True)
-    download_url = f"{registry_url}/packages/{package_name}/latest/download" # Use 'latest' for now
-
-    # Download the package zip file
-    filename = f"{package_name}.zip" # Default filename
-    package_path = os.path.join(package_dir, filename)
-    click.echo(f"Downloading package from: {download_url}")
-    tmp_package_path = package_path + ".tmp"
-    package_data_for_db = {} # To store version and install_name for DB
-
-    try:
-        click.echo(f"Downloading package from: {download_url}")
-        response = requests.get(download_url, stream=True)
-        response.raise_for_status()
-
-        # Try to get 'install_name' and 'version' from headers or a preliminary metadata fetch if possible
-        # For now, we'll rely on the package_name from the CLI and assume it's the install_name,
-        # and try to get version from mcp_package.json after download.
-        # This part might need refinement if the downloaded package has a different install_name or if version is critical before full extraction.
-
-        with open(tmp_package_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        # Atomic rename after successful download
-        os.rename(tmp_package_path, package_path)
-        click.echo(f"Package downloaded to {package_path}")
-
-        # Extract install_name and version from mcp_package.json inside the zip for DB logging
-        # This is a simplified approach; ideally, the registry would provide this directly or via headers.
-        actual_install_name = package_name # Default to CLI arg
-        installed_version = "unknown"      # Default version
-        try:
-            with zipfile.ZipFile(package_path, 'r') as zf:
-                if 'mcp_package.json' in zf.namelist():
-                    with zf.open('mcp_package.json') as meta_file:
-                        metadata = json.load(meta_file)
-                        actual_install_name = metadata.get('install_name', actual_install_name)
-                        installed_version = metadata.get('version', installed_version)
-                else:
-                    click.echo("Warning: mcp_package.json not found in the zip. Using provided name and 'unknown' version for local tracking.", err=True)
-        except Exception as e_zip_meta:
-            click.echo(f"Warning: Could not read metadata from zip {package_path}: {e_zip_meta}. Using provided name and 'unknown' version for local tracking.", err=True)
-
-        click.echo(f"[LOG] Calling install_package_from_zip for {filename}...")
-        install_success, install_inputs_values = install_package_from_zip(package_path, actual_install_name)
-
-        if not install_success:
-            click.echo(f"[LOG] Error: install_package_from_zip failed for {actual_install_name}.", err=True)
-            # Clean up downloaded zip if install script failed, but keep DB entry attempt to mark 'failed' if desired (not implemented here)
-            if os.path.exists(package_path):
-                 os.remove(package_path) # Or move to a failed/quarantine area
-            sys.exit(1)
+        # Fetch Servers
+        servers = get_registry_servers()
+        if servers is not None:
+            for server in servers:
+                all_items.append({
+                    'item_type': 'Server',
+                    'display_name': server.get('display_name', 'Unknown Server'),
+                    'registry_name': server.get('registry_name', 'N/A'), # Name used for install/config
+                    'language': server.get('language', 'N/A')
+                })
         else:
-            add_package_to_local_db(actual_install_name, installed_version, INSTALL_DIR / actual_install_name)
-            click.echo(f"[LOG] Successfully processed {actual_install_name} after install_package_from_zip.")
-            click.echo(f"Package '{actual_install_name}' (v{installed_version}) installed successfully.")
+             click.echo("Warning: Could not retrieve server list from registry.", err=True)
 
-    except requests.exceptions.RequestException as e:
-        click.echo(f"[LOG] Error downloading package {package_name}: {e}", err=True)
-        if os.path.exists(tmp_package_path):
-            os.remove(tmp_package_path) # Clean up partial download
-        click.echo(f"[LOG] Failed to find or download package '{package_name}'.")
-        sys.exit(1)
-    except Exception as e_general: # Catch other potential errors during the process
-        click.echo(f"An unexpected error occurred during package installation: {e_general}", err=True)
-        if os.path.exists(tmp_package_path):
-            os.remove(tmp_package_path)
-        if os.path.exists(package_path) and not is_package_installed(actual_install_name if 'actual_install_name' in locals() else package_name):
-            # If package_path exists but it's not marked installed, it might be a failed install's artifact
-            click.echo(f"Cleaning up potentially incomplete installation at {package_path}", err=True)
-            # shutil.rmtree(INSTALL_DIR / (actual_install_name if 'actual_install_name' in locals() else package_name)) # If it's a dir
-            # os.remove(package_path) # If it's just the zip
-        sys.exit(1)
-
-    # If target tool specified, try to update its config using ide_config_commands in mcp_package.json
-    # This logic should be AFTER successful package installation and DB update.
-    if target:
-        # Ensure actual_install_name is defined here. It should be from the metadata extraction earlier.
-        # If metadata extraction failed, actual_install_name defaults to package_name.
-        install_dir_for_pkg = INSTALL_DIR / actual_install_name
-        mcp_json_path = install_dir_for_pkg / "mcp_package.json"
-        target_path = get_target_config_path(target)
-
-        if target_path and mcp_json_path.exists():
-            click.echo(f"Attempting to add configuration to target '{target}' at {target_path}...")
-            try:
-                with open(mcp_json_path, "r") as f:
-                    metadata = json.load(f)
-                ide_configs = metadata.get("ide_config_commands", {})
-                # The key for the config block in ide_config_commands should match the 'target' option
-                # The value associated with this key is the actual config block to be inserted.
-                # The 'server_registry_name' to update_mcp_config_file should be the package's install_name.
-                # The config_block itself should be a string representation of the JSON for that server.
-
-                config_block_for_target = ide_configs.get(target)
-                if config_block_for_target:
-                    # Substitute install_inputs_values into config_block
-                    def substitute_vars(obj):
-                        if isinstance(obj, dict):
-                            return {k: substitute_vars(v) for k, v in obj.items()}
-                        elif isinstance(obj, list):
-                            return [substitute_vars(x) for x in obj]
-                        elif isinstance(obj, str):
-                            result = obj
-                            for var, val in install_inputs_values.items(): # install_inputs_values from install_package_from_zip
-                                result = result.replace(f"${{{var}}}", val)
-                            return result
-                        else:
-                            return obj
-                    
-                    config_block_sub = substitute_vars(config_block_for_target)
-                    # The update_mcp_config_file expects the value part of "mcpServers": { "<short_name>": <value_part> }
-                    # So we need to pass the 'actual_install_name' as the key and then the substituted config block as the value string.
-                    # The `config_command` arg to update_mcp_config_file is a string that looks like: '{"mcpServers": {"my-server": { ... }}}'
-                    # We need to construct this string using actual_install_name and config_block_sub.
-                    # The key in the target MCP config will be `actual_install_name`.
-                    final_config_str_for_update = json.dumps({"mcpServers": {actual_install_name: config_block_sub}})
-
-                    if not update_mcp_config_file(target_path, actual_install_name, final_config_str_for_update):
-                        click.echo(f"Failed to automatically update target configuration file for {actual_install_name}.", err=True)
-                    else:
-                        click.echo(f"Successfully updated target '{target}' configuration for {actual_install_name}.")
-                else:
-                    click.echo(f"No IDE config command found for target '{target}' in {mcp_json_path}. Skipping target update.")
-            except Exception as e:
-                click.echo(f"Error reading or processing {mcp_json_path} for target '{target}': {e}", err=True)
-                click.echo("Skipping target configuration update.")
-        elif target and not mcp_json_path.exists():
-            click.echo(f"Warning: {mcp_json_path} not found. Cannot configure target '{target}'.", err=True)
-        elif target and not target_path:
-             click.echo(f"Warning: Unknown target '{target}'. Cannot configure.", err=True)
-
-
-@cli.command(name='uninstall')
-@click.argument('package_name')
-@click.option('--target', default=None, help="Remove server configuration from the specified target tool's config file (e.g., 'windsurf').")
-def uninstall(package_name, target):
-    """Uninstalls a package or removes a server's configuration."""
-    click.echo(f"Attempting to uninstall or remove configuration for: {package_name}")
-    init_local_db() # Ensure DB is initialized for lookups
-
-    package_path = INSTALL_DIR / package_name
-    package_zip_path = INSTALL_DIR / f"{package_name}.zip" 
-
-    is_physically_installed_package = package_path.is_dir()
-    server_details = get_registry_server(package_name) 
-
-    actual_install_name = package_name 
-
-    if is_physically_installed_package:
-        click.echo(f"Found installed package directory at: {package_path}")
-        metadata_path = package_path / "mcp_package.json"
-        # Initialize server_short_name_for_config, will be updated if metadata is found
-        server_short_name_for_config = package_name # Default, may be overridden by metadata
-        # actual_install_name is already defined from package_name and will be updated from metadata
-
-        if metadata_path.exists():
-            try:
-                with open(metadata_path, "r") as f:
-                    metadata = json.load(f)
-                actual_install_name = metadata.get('install_name', actual_install_name) # Update from metadata
-                server_short_name_for_config = metadata.get('config_key_name', actual_install_name) # Update from metadata
-
-                uninstall_steps = metadata.get("uninstall_steps", [])
-                if uninstall_steps:
-                    click.echo(f"Running uninstall steps for {actual_install_name}...")
-                    original_cwd = os.getcwd()
-                    try:
-                        os.chdir(package_path) # package_path is the package's installation directory
-                        click.echo(f"Changed directory to {package_path} for uninstall steps.")
-                        for idx, step in enumerate(uninstall_steps, 1):
-                            if step.get("type") == "shell" and "command" in step:
-                                command_to_run = step["command"]
-                                click.echo(f"Uninstall Step {idx}: {command_to_run}")
-                                if click.confirm(f"Run uninstall command: '{command_to_run}' in {os.getcwd()}?", default=True):
-                                    process_result = subprocess.run(command_to_run, shell=True, capture_output=True, text=True)
-                                    if process_result.stdout:
-                                        click.echo(f"Output:\n{process_result.stdout.strip()}")
-                                    if process_result.stderr:
-                                        click.echo(f"Error output:\n{process_result.stderr.strip()}", err=True)
-                                    if process_result.returncode != 0:
-                                        click.echo(f"Warning: Uninstall command '{command_to_run}' exited with code {process_result.returncode}", err=True)
-                                else:
-                                    click.echo("Skipped uninstall step.")
-                            else:
-                                click.echo(f"Skipping unknown or malformed uninstall step: {step}", err=True)
-                    except FileNotFoundError:
-                        click.echo(f"Error: Package directory {package_path} not found for running uninstall steps.", err=True)
-                    except Exception as e_chdir:
-                        click.echo(f"Error changing directory or running uninstall steps: {e_chdir}", err=True)
-                    finally:
-                        os.chdir(original_cwd)
-                        click.echo(f"Restored directory to {original_cwd}.")
-                else:
-                    click.echo(f"No uninstall steps defined in {metadata_path.name} for {actual_install_name}.")
-            except Exception as e_meta:
-                click.echo(f"Error reading or processing {metadata_path} for uninstall_steps: {e_meta}. Proceeding with removal.", err=True)
+        # Fetch Packages
+        packages = get_registry_packages()
+        if packages is not None:
+            for pkg in packages:
+                pkg_name = pkg.get('name') # Used as the primary identifier for packages
+                if not pkg_name:
+                    click.echo(f"Warning: Skipping package with missing name in registry data: {pkg}", err=True)
+                    continue
+                all_items.append({
+                    'item_type': 'Package',
+                    'name': pkg_name, # This is the key for installed_db_packages
+                    'version': pkg.get('version', 'N/A'), # Registry version
+                    'description': pkg.get('description', 'No description')
+                })
         else:
-            click.echo(f"No {metadata_path.name} found at {metadata_path}. Skipping custom uninstall steps.")
-            # If metadata not found, actual_install_name remains as initialized (package_name)
-            # and server_short_name_for_config also remains as initialized (package_name).
+            click.echo("Warning: Could not retrieve package list from registry.", err=True)
 
-        if target: # Target removal logic, using potentially updated server_short_name_for_config
-            target_config_path = get_target_config_path(target)
-            if target_config_path:
-                click.echo(f"Attempting to remove '{server_short_name_for_config}' configuration from target '{target}'...")
-                if remove_server_from_mcp_config(target_config_path, server_short_name_for_config):
-                    click.echo(f"Successfully checked/removed configuration for '{server_short_name_for_config}' from '{target}'.")
-                else:
-                    click.echo(f"Failed to remove configuration for '{server_short_name_for_config}' from '{target}'.", err=True)
-            else:
-                click.echo(f"Warning: Unknown target '{target}'. Cannot remove configuration.", err=True)
+        if not all_items:
+            click.echo("No items (packages or servers) found in the registry or an error occurred during fetch.")
+            return
 
-        try:
-            shutil.rmtree(package_path)
-            click.echo(f"Successfully removed package directory: {package_path}")
-            remove_package_from_local_db(actual_install_name) 
-        except OSError as e:
-            click.echo(f"Error removing package directory {package_path}: {e}", err=True)
-            if is_package_installed(actual_install_name):
-                remove_package_from_local_db(actual_install_name)
+        all_items.sort(key=lambda x: (x['item_type'], x.get('name', x.get('display_name', ''))))
 
-        if package_zip_path.exists():
-            try:
-                os.remove(package_zip_path)
-                click.echo(f"Successfully removed package zip: {package_zip_path}")
-            except OSError as e:
-                click.echo(f"Warning: Could not remove package zip {package_zip_path}: {e}", err=True)
+        click.echo(f"\n{'Type':<10} {'Name / Display Name':<35} {'Version / Install Name':<30} {'Status / Details':<40}")
+        click.echo("-" * 115)
 
-    elif server_details: 
-        click.echo(f"'{package_name}' is a registered server. It's not installed as a directory package.")
-        if target:
-            target_config_path = get_target_config_path(target)
-            server_key_in_config = package_name 
-            if target_config_path:
-                click.echo(f"Attempting to remove '{server_key_in_config}' configuration from target '{target}'...")
-                if remove_server_from_mcp_config(target_config_path, server_key_in_config):
-                    click.echo(f"Successfully checked/removed configuration for '{server_key_in_config}' from '{target}'.")
-                else:
-                    click.echo(f"Failed to remove configuration for '{server_key_in_config}' from '{target}'.", err=True)
-            else:
-                click.echo(f"Warning: Unknown target '{target}'. Cannot remove configuration.", err=True)
-        else:
-            click.echo(f"No --target specified. To remove configuration for server '{package_name}', use --target.")
+        for item in all_items:
+            if item['item_type'] == 'Package':
+                name = item['name'] # This is the package's unique name
+                version = item['version']
+                description = item['description']
+                status_marker = ""
+                details_str = f"(Registry v{version})"
+                if name in installed_db_packages:
+                    installed_version = installed_db_packages[name][1]
+                    status_marker = f"[INSTALLED v{installed_version}]"
+                click.echo(f"{item['item_type']:<10} {name:<35} {details_str:<30} {status_marker} {description[:35]}")
+            
+            elif item['item_type'] == 'Server':
+                display_name = item['display_name']
+                registry_name = item['registry_name'] # This is the name used for mcpm install <server_registry_name> --target ...
+                language = item['language']
+                click.echo(f"{item['item_type']:<10} {display_name:<35} (Install as: {registry_name:<20}) (Lang: {language})")
+        return # End of non-interactive mode
     else:
-        click.echo(f"Package or server '{package_name}' not found as an installed directory or a known server.")
-        if is_package_installed(package_name):
-            click.echo(f"However, '{package_name}' was found in the local installation records. Removing from records.")
-            remove_package_from_local_db(package_name)
-        else:
-            click.echo("No action taken.")
+        # --- Interactive Mode: Focuses on Packages from Registry --- 
+        click.echo("Entering interactive package management mode...")
+        
+        while True: # Loop for continuous interaction until user exits
+            packages_from_registry = get_registry_packages()
+            if packages_from_registry is None:
+                click.echo("Error: Could not retrieve packages from the registry. Exiting interactive mode.", err=True)
+                break 
+            if not packages_from_registry:
+                click.echo("No packages found in the registry.")
+                break
+
+            installed_package_info = {p[0]: p for p in get_all_installed_package_details()}
+            
+            choices = []
+            # Filter for items that are actual 'packages' (not 'server' types from registry perspective)
+            # and have a 'name' attribute, which is crucial.
+            interactive_packages = [
+                p for p in packages_from_registry 
+                if p.get('name') and p.get('package_type', 'package') == 'package'
+            ]
+            sorted_interactive_packages = sorted(interactive_packages, key=lambda p: p.get('name', ''))
+
+            if not sorted_interactive_packages:
+                click.echo("No installable packages available in the registry to manage interactively.")
+                break
+
+            current_actions_map = {} # Maps choice value (package name) to its details for action
+
+            for idx, pkg_data in enumerate(sorted_interactive_packages):
+                pkg_name = pkg_data["name"] # Name should be reliable here due to pre-filtering
+                registry_version = pkg_data.get("version", "N/A")
+                description = pkg_data.get("description", "")
+                
+                is_installed = pkg_name in installed_package_info
+                action_verb = "Uninstall" if is_installed else "Install"
+                
+                status_line = ""
+                if is_installed:
+                    installed_ver = installed_package_info[pkg_name][1]
+                    status_line = f"(Installed v{installed_ver})"
+                else:
+                    status_line = f"(Available v{registry_version})"
+                
+                choice_title = f"{idx + 1}. {pkg_name} {status_line} - {action_verb} - {description[:40]}..."
+                choices.append(questionary.Choice(title=choice_title, value=pkg_name))
+                current_actions_map[pkg_name] = {'action': action_verb, 'name': pkg_name}
+            
+            choices.append(questionary.Separator())
+            choices.append(questionary.Choice(title=f"{len(choices)}. [ Exit Interactive Mode ]", value="__MCPM_EXIT__"))
+
+            selected_value = questionary.select(
+                "Select a package to manage or exit:",
+                choices=choices,
+                use_shortcuts=False # Avoids potential conflicts with numeric list
+            ).ask()
+
+            if selected_value is None or selected_value == "__MCPM_EXIT__": # User pressed Escape or chose Exit
+                click.echo("Exiting interactive list.")
+                break # Exit the while loop
+
+            action_details = current_actions_map.get(selected_value)
+            if not action_details:
+                click.echo("Invalid selection. Please try again.", err=True)
+                continue # Restart the loop to show choices again
+
+            ctx = click.get_current_context()
+            package_to_manage = action_details['name']
+            
+            if action_details['action'] == "Install":
+                if questionary.confirm(f"Do you want to install {package_to_manage}?").ask():
+                    ctx.invoke(cli.commands['install'], package_name=package_to_manage, target=None)
+            elif action_details['action'] == "Uninstall":
+                if questionary.confirm(f"Do you want to uninstall {package_to_manage}?").ask():
+                    ctx.invoke(cli.commands['uninstall'], package_name=package_to_manage, target=None)
+            
+            # After an action, ask if user wants to continue or exit the interactive session.
+            if not questionary.confirm("Continue managing packages?").ask():
+                click.echo("Exiting interactive list.")
+                break
+            # If yes, the loop will restart, re-fetching and re-displaying the list.
 
 
 @cli.command()
@@ -1038,6 +837,120 @@ def publish(package_file):
         click.echo(f"Error publishing package: {e.response.status_code} {e.response.reason} - {error_detail}", err=True)
     except Exception as e:
         click.echo(f"An unexpected error occurred during publishing: {e}", err=True)
+
+
+@cli.command(name="install")
+@click.argument('package_name')
+@click.option('--target', default=None, help="Target tool for server configuration (e.g., 'windsurf')")
+def install_command_func(package_name, target):
+    """Installs a package or configures a server."""
+    # For now, this function primarily handles package installation logic
+    # Server configuration logic would need to be distinctly handled if 'target' is specified.
+    click.echo(f"Attempting to install package: {package_name}")
+
+    downloaded_zip = download_package(package_name) # Assumes version='latest'
+    if downloaded_zip:
+        # install_package_from_zip returns: success (bool), install_inputs_values (dict)
+        success, _ = install_package_from_zip(downloaded_zip, package_name)
+        if success:
+            package_install_full_path = INSTALL_DIR / package_name
+            metadata_path = package_install_full_path / "mcp_package.json"
+            version_to_store = "unknown"
+            install_name_to_store = package_name # Default to the argument if no metadata
+
+            if metadata_path.exists():
+                try:
+                    with open(metadata_path, "r") as f:
+                        metadata = json.load(f)
+                    # Use 'install_name' from metadata for DB key if available, else use package_name argument
+                    install_name_to_store = metadata.get("install_name", package_name)
+                    version_to_store = metadata.get("version", "unknown")
+                except Exception as e:
+                    click.echo(f"Warning: Could not read metadata from {metadata_path} for version/install_name: {e}", err=True)
+            
+            add_package_to_local_db(install_name_to_store, version_to_store, str(package_install_full_path))
+            # click.echo(f"Package {install_name_to_store} (v{version_to_store}) recorded as installed.") # Redundant with add_package_to_local_db output
+        else:
+            click.echo(f"Installation process failed for {package_name}.", err=True)
+    else:
+        click.echo(f"Download failed for package {package_name}.", err=True)
+
+
+@cli.command(name="uninstall")
+@click.argument('package_name') # This should ideally be the 'install_name' used in the DB
+@click.option('--target', default=None, help="Target tool for server de-configuration (e.g., 'windsurf')")
+def uninstall_command_func(package_name, target):
+    """Uninstalls a package or de-configures a server."""
+    # This function primarily handles package uninstallation.
+    # Server de-configuration would be separate.
+    click.echo(f"Attempting to uninstall package: {package_name}")
+
+    # We should use the name that's stored in the database (install_name).
+    # For now, we assume package_name argument IS the install_name.
+    if not is_package_installed(package_name):
+        click.echo(f"Package '{package_name}' is not listed as installed in the local database.", err=True)
+        return
+
+    # To get the actual install path, we'd ideally query the DB.
+    # For now, construct path using INSTALL_DIR and the assumed package_name (as dir name)
+    package_install_full_path = INSTALL_DIR / package_name 
+
+    # --- Run uninstall_steps from mcp_package.json --- 
+    metadata_path = package_install_full_path / "mcp_package.json"
+    if metadata_path.exists() and package_install_full_path.exists(): # only chdir if path exists
+        try:
+            with open(metadata_path, "r") as f:
+                metadata = json.load(f)
+            uninstall_steps = metadata.get("uninstall_steps", [])
+            if uninstall_steps:
+                click.echo(f"Running uninstall steps for {package_name} from {package_install_full_path}...")
+                original_cwd = os.getcwd()
+                try:
+                    os.chdir(package_install_full_path)
+                    click.echo(f"Changed directory to {package_install_full_path} for uninstall steps.")
+                    for idx, step in enumerate(uninstall_steps, 1):
+                        if step.get("type") == "shell" and "command" in step:
+                            command = step["command"]
+                            click.echo(f"Step {idx}: {command}")
+                            if click.confirm(f"Run uninstall command: '{command}' in {os.getcwd()}?", default=True):
+                                process_result = subprocess.run(command, shell=True, capture_output=True, text=True)
+                                if process_result.stdout: click.echo(f"Output:\n{process_result.stdout.strip()}")
+                                if process_result.stderr: click.echo(f"Error output:\n{process_result.stderr.strip()}", err=True)
+                                if process_result.returncode != 0:
+                                    click.echo(f"Warning: Uninstall command '{command}' exited with code {process_result.returncode}", err=True)
+                            else:
+                                click.echo("Skipped this uninstall step.")
+                except FileNotFoundError:
+                    click.echo(f"Error: Package directory {package_install_full_path} not found for running uninstall steps.", err=True)
+                except Exception as e_chdir:
+                    click.echo(f"Error changing directory or running uninstall steps: {e_chdir}", err=True)
+                finally:
+                    os.chdir(original_cwd)
+                    click.echo(f"Restored directory to {original_cwd}.")
+            else:
+                click.echo("No uninstall steps defined in mcp_package.json.")
+        except Exception as e:
+            click.echo(f"Error reading uninstall_steps from {metadata_path}: {e}", err=True)
+    elif not package_install_full_path.exists():
+        click.echo(f"Package directory {package_install_full_path} does not exist. Cannot run uninstall steps.", err=True)
+    else: # metadata_path does not exist but package_install_full_path does
+        click.echo(f"No {metadata_path.name} found in {package_install_full_path}. Skipping uninstall steps.")
+
+    # --- Remove package directory --- 
+    if package_install_full_path.exists():
+        try:
+            shutil.rmtree(package_install_full_path)
+            click.echo(f"Successfully removed directory {package_install_full_path}.")
+            # Remove from local DB *after* successful directory removal
+            remove_package_from_local_db(package_name) 
+        except OSError as e:
+            click.echo(f"Error removing package directory {package_install_full_path}: {e}", err=True)
+            click.echo("You may need to remove it manually. The record in local DB will remain until resolved.")
+    else:
+        click.echo(f"Package directory {package_install_full_path} not found. Assuming already removed.")
+        # If directory is gone, ensure it's also removed from DB
+        remove_package_from_local_db(package_name)
+
 
 
 if __name__ == '__main__':

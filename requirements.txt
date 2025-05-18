@@ -1,0 +1,4 @@
+click
+requests
+questionary
+# Add other dependencies here if any
