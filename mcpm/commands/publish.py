@@ -58,12 +58,37 @@ def publish(package_file):
     
     # Get the registry URL
     registry_url = get_registry_url()
-    upload_url = f"{registry_url}/packages/upload"
+    
+    # Use the correct endpoint for publishing packages
+    # Based on the server code, the endpoint is /api/packages/publish
+    upload_url = f"{registry_url}/packages/publish"
+    
+    click.echo(f"Using registry URL: {registry_url}")
+    click.echo(f"Publishing to: {upload_url}")
     
     try:
         with open(package_path, 'rb') as f:
-            files = {'file': (package_path.name, f, 'application/zip')}
-            response = requests.post(upload_url, files=files)
+            # Use the 'package' field name as expected by the server
+            files = {'package': (package_path.name, f)}
+            
+            # Create a metadata object and convert it to a JSON string
+            metadata_obj = {
+                'name': package_name,
+                'version': package_version,
+                'description': metadata.get('description', ''),
+                'author': metadata.get('author', ''),
+                'license': metadata.get('license', ''),
+                'runtime': metadata.get('runtime', 'generic'),
+                'entrypoint': metadata.get('entrypoint', '')
+            }
+            
+            # Send metadata as a JSON string in a field called 'metadata'
+            data = {
+                'metadata': json.dumps(metadata_obj)
+            }
+            
+            # Make the request
+            response = requests.post(upload_url, files=files, data=data)
             
             if response.status_code == 200 or response.status_code == 201:
                 click.echo(f"Successfully published {package_name} (v{package_version}) to registry.")

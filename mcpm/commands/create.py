@@ -33,10 +33,14 @@ def create(output, source):
             package_author = click.prompt("Author", default="")
             package_license = click.prompt("License", default="MIT")
             
+            # Normalize package name: lowercase and replace spaces with dashes
+            normalized_name = package_name.lower().replace(" ", "-")
+            
             # Create a basic metadata file
             metadata = {
-                "name": package_name,
-                "install_name": package_name,  # Default to package name
+                "name": normalized_name,
+                "display_name": package_name,  # Keep original name for display
+                "install_name": normalized_name,  # Default to normalized name
                 "description": package_description,
                 "version": package_version,
                 "author": package_author,
@@ -129,8 +133,10 @@ def create(output, source):
     # Set default output filename if not provided
     if not output:
         package_name = metadata.get("name", source_path.name)
+        # Normalize package name: lowercase and replace spaces with dashes
+        package_name = package_name.lower().replace(" ", "-")
         package_version = metadata.get("version", "0.1.0")
-        output = f"{package_name}-{package_version}.zip"
+        output = f"{package_name}-{package_version}.mcpz"
     
     # Create the package archive
     if create_package_archive(output, source):
@@ -139,6 +145,6 @@ def create(output, source):
         # Show next steps
         click.echo("\nNext steps:")
         click.echo(f"1. Publish your package: mcpm publish {output}")
-        click.echo("2. Install your package: mcpm install <package-name>")
+        click.echo(f"2. Install your package: mcpm install {package_name}")
     else:
         click.echo("Failed to create package.", err=True)

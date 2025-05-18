@@ -110,7 +110,7 @@ def install_package_from_zip(zip_path, package_name):
 def create_package_archive(output_filename, source_dir='.'):
     """Creates a zip archive of the source directory."""
     source_path = Path(source_dir).resolve()
-    exclude_patterns = ['.git', '__pycache__', '*.pyc', '.DS_Store', output_filename, '.venv', 'venv']
+    exclude_patterns = ['.git', '__pycache__', '*.pyc', '.DS_Store', output_filename, '.venv', 'venv', '*.zip', '*.mcpz']
 
     click.echo(f"Creating archive {output_filename} from {source_path}...")
     try:

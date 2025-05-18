@@ -74,13 +74,13 @@ def download_package(package_name, version="latest"):
         response = requests.get(download_url, stream=True)
         response.raise_for_status()
 
-        # Save the downloaded zip file temporarily
-        temp_zip_path = INSTALL_DIR / f"{package_name}_{version}_temp.zip"
-        with open(temp_zip_path, 'wb') as f:
+        # Save the downloaded package file temporarily
+        temp_package_path = INSTALL_DIR / f"{package_name}_{version}_temp.mcpz"
+        with open(temp_package_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-        click.echo(f"Downloaded to {temp_zip_path}")
-        return temp_zip_path
+        click.echo(f"Downloaded to {temp_package_path}")
+        return temp_package_path
     except requests.exceptions.RequestException as e:
         click.echo(f"Error downloading package {package_name}: {e}", err=True)
         return None
