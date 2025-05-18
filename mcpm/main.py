@@ -322,18 +322,26 @@ def create_package_archive(output_filename, source_dir='.'):
 
 
 def get_all_installed_package_details():
-    """Fetches details for all installed packages from the local database."""
+    """Fetches details for all installed packages from the local database as a list of dictionaries."""
     conn = None
     try:
         conn = _get_local_db_connection()
         cursor = conn.cursor()
-        # Ensure all columns expected by list_items are selected
         cursor.execute("SELECT name, version, install_path, installed_at FROM installed_packages")
-        packages = cursor.fetchall()
-        return packages
+        packages_tuples = cursor.fetchall()
+        
+        packages_list_of_dicts = []
+        for row_tuple in packages_tuples:
+            packages_list_of_dicts.append({
+                "name": row_tuple[0], # This is the package's install_name
+                "version": row_tuple[1],
+                "install_path": row_tuple[2],
+                "installed_at": row_tuple[3]
+            })
+        return packages_list_of_dicts
     except sqlite3.Error as e:
         click.echo(f"Database error while fetching installed package details: {e}", err=True)
-        return [] # Return empty list on error to prevent crash
+        return [] 
     finally:
         if conn:
             conn.close()
@@ -479,6 +487,71 @@ def remove_server_from_mcp_config(config_path: Path, server_short_name: str):
     except Exception as e:
         import traceback
         click.echo(f"An unexpected error occurred while removing server from {config_path}:", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        return False
+
+# --- Helper for 'configure' command: Update MCP JSON config with object ---
+def update_mcp_config_file_for_configure(config_path: Path, server_key_in_target: str, config_snippet_obj: dict, package_install_path: Path):
+    """
+    Reads, updates, and writes the target MCP JSON configuration file using a snippet object.
+    The server_key_in_target (package's install_name) will be the key for the snippet.
+    Relative paths within the snippet (e.g., "path": ".") will be resolved.
+
+    Args:
+        config_path: Path to the target JSON file (e.g., windsurf mcp_config.json).
+        server_key_in_target: The key for this server entry in the target config (package's install_name).
+        config_snippet_obj: The configuration snippet (dict) to add/update.
+        package_install_path: Absolute path to the package installation directory.
+    """
+    try:
+        # Ensure parent directory exists
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        if config_path.exists() and config_path.stat().st_size > 0:
+            with open(config_path, 'r') as f:
+                try:
+                    data = json.load(f)
+                    if not isinstance(data, dict):
+                        click.echo(f"Warning: Existing config file {config_path} does not contain a JSON object. Initializing structure.", err=True)
+                        data = {}
+                except json.JSONDecodeError:
+                    click.echo(f"Warning: Could not parse existing config file {config_path}. Backing up and creating new.", err=True)
+                    backup_path = config_path.with_suffix(config_path.suffix + '.bak')
+                    try:
+                        shutil.copyfile(config_path, backup_path)
+                        click.echo(f"Backed up existing config to {backup_path}")
+                    except Exception as backup_e:
+                        click.echo(f"Warning: Failed to back up existing config file: {backup_e}", err=True)
+                    data = {}
+        
+        if 'mcpServers' not in data or not isinstance(data.get('mcpServers'), dict):
+            click.echo(f"Initializing 'mcpServers' object in {config_path}.")
+            data['mcpServers'] = {}
+
+        # Process the snippet: copy and resolve paths
+        processed_snippet = json.loads(json.dumps(config_snippet_obj)) # Deep copy
+
+        if 'path' in processed_snippet and isinstance(processed_snippet['path'], str) and not Path(processed_snippet['path']).is_absolute():
+            original_snippet_path = processed_snippet['path']
+            absolute_path = (package_install_path / original_snippet_path).resolve()
+            processed_snippet['path'] = str(absolute_path)
+            click.echo(f"Resolved path for server '{server_key_in_target}' from '{original_snippet_path}' to '{absolute_path}'.")
+
+        click.echo(f"Adding/Updating configuration for server '{server_key_in_target}' in {config_path}...")
+        data['mcpServers'][server_key_in_target] = processed_snippet
+
+        with open(config_path, 'w') as f:
+            json.dump(data, f, indent=2)
+
+        click.echo(f"Successfully updated {config_path} for server '{server_key_in_target}'.")
+        return True
+
+    except IOError as e:
+        click.echo(f"Error writing to config file {config_path}: {e}", err=True)
+        return False
+    except Exception as e:
+        import traceback
+        click.echo(f"An unexpected error occurred while updating {config_path} for '{server_key_in_target}':", err=True)
         click.echo(traceback.format_exc(), err=True)
         return False
 
@@ -952,6 +1025,179 @@ def uninstall_command_func(package_name, target):
         remove_package_from_local_db(package_name)
 
 
+
+
+@cli.command("configure")
+@click.option('--package-name', default=None, help="The (install) name of the package to configure. Required in non-interactive mode.")
+@click.option('--target-ide', default=None, help="The target IDE to configure (e.g., 'windsurf'). Required in non-interactive mode.")
+@click.option('--action', type=click.Choice(['add', 'remove'], case_sensitive=False), default=None, help="Action to perform: 'add' or 'remove'. Required in non-interactive mode.")
+@click.option('--non-interactive', is_flag=True, help="Run in non-interactive mode, requires all options to be set.")
+def configure_command_func(package_name, target_ide, action, non_interactive):
+    """Configures an installed MCP package for a target IDE."""
+    init_local_db() # Ensure DB is initialized
+
+    if non_interactive:
+        if not all([package_name, target_ide, action]):
+            click.echo("Error: In non-interactive mode, --package-name, --target-ide, and --action are required.", err=True)
+            sys.exit(1)
+        
+        installed_packages = get_all_installed_package_details()
+        selected_package_details = None
+        for pkg in installed_packages:
+            if pkg['name'] == package_name: # 'name' in DB is the install_name
+                selected_package_details = pkg
+                break
+        
+        if not selected_package_details:
+            click.echo(f"Error: Package '{package_name}' not found or not installed.", err=True)
+            sys.exit(1)
+        
+        pkg_install_name = selected_package_details['name']
+        pkg_install_path = Path(selected_package_details['install_path'])
+
+    else: # Interactive mode
+        installed_packages = get_all_installed_package_details()
+        if not installed_packages:
+            click.echo("No packages are currently installed.", err=True)
+            return
+
+        package_choices = [
+            f"{pkg['name']} (v{pkg.get('version', 'N/A')}) - {pkg['install_path']}" 
+            for pkg in installed_packages
+        ]
+        if not package_choices:
+            # This case should ideally be covered by `if not installed_packages` above
+            click.echo("No installed packages found to configure.", err=True)
+            return
+
+        selected_pkg_display_name = questionary.select(
+            "Select the package to configure:",
+            choices=package_choices
+        ).ask()
+
+        if not selected_pkg_display_name:
+            click.echo("No package selected. Exiting.")
+            return
+
+        selected_package_details = None
+        for pkg in installed_packages:
+            display_name = f"{pkg['name']} (v{pkg.get('version', 'N/A')}) - {pkg['install_path']}"
+            if display_name == selected_pkg_display_name:
+                selected_package_details = pkg
+                break
+        
+        if not selected_package_details:
+            click.echo("Error: Could not retrieve details for the selected package.", err=True)
+            sys.exit(1)
+
+        pkg_install_name = selected_package_details['name']
+        pkg_install_path = Path(selected_package_details['install_path'])
+
+        target_ide = questionary.text("Enter the target IDE key (e.g., windsurf):", validate=lambda text: True if len(text) > 0 else "Target IDE cannot be empty.").ask()
+        if not target_ide:
+            click.echo("No target IDE provided. Exiting.")
+            return
+        
+        action = questionary.select(
+            "Select action:",
+            choices=[
+                questionary.Choice("Add/Update configuration", "add"),
+                questionary.Choice("Remove configuration", "remove")
+            ]
+        ).ask()
+        if not action:
+            click.echo("No action selected. Exiting.")
+            return
+
+    # Common logic for both modes
+    mcp_package_json_path = pkg_install_path / "mcp_package.json"
+    if not mcp_package_json_path.exists():
+        click.echo(f"Error: mcp_package.json not found at {mcp_package_json_path}", err=True)
+        sys.exit(1)
+
+    try:
+        with open(mcp_package_json_path, 'r') as f:
+            package_metadata = json.load(f)
+    except json.JSONDecodeError:
+        click.echo(f"Error: Could not parse mcp_package.json at {mcp_package_json_path}", err=True)
+        sys.exit(1)
+    except IOError as e:
+        click.echo(f"Error reading mcp_package.json at {mcp_package_json_path}: {e}", err=True)
+        sys.exit(1)
+
+    # Ensure the install_name from mcp_package.json matches what's in the DB (which is pkg_install_name)
+    # This is critical because pkg_install_name is used as the key in the target IDE config.
+    metadata_actual_install_name = package_metadata.get('install_name')
+    if metadata_actual_install_name != pkg_install_name:
+        click.echo(f"Warning: Mismatch in 'install_name' for package.", err=True)
+        click.echo(f"  DB record uses: '{pkg_install_name}' (this will be used as the key).", err=True)
+        click.echo(f"  mcp_package.json has: '{metadata_actual_install_name}'.", err=True)
+        click.echo("  It is highly recommended these match and that 'install_name' in mcp_package.json is unique and stable.",err=True)
+        # Proceeding with pkg_install_name from DB as the key
+
+    ide_configs = package_metadata.get('ide_config_commands', {})
+    if target_ide not in ide_configs:
+        click.echo(f"Error: Target IDE '{target_ide}' not defined in mcp_package.json for package '{pkg_install_name}'.", err=True)
+        available_ides = list(ide_configs.keys())
+        if available_ides:
+            click.echo(f"Available IDE configurations in mcp_package.json: {', '.join(available_ides)}")
+        else:
+            click.echo("No IDE configurations ('ide_config_commands') are defined in this package's mcp_package.json.")
+        sys.exit(1)
+
+    config_snippet_obj = ide_configs[target_ide]
+    if not isinstance(config_snippet_obj, dict):
+        click.echo(f"Error: Configuration for '{target_ide}' in mcp_package.json is not a valid JSON object (dictionary).", err=True)
+        sys.exit(1)
+
+    target_mcp_config_file_path = get_target_config_path(target_ide)
+    if not target_mcp_config_file_path:
+        click.echo(f"Error: Could not determine configuration file path for target IDE '{target_ide}'.", err=True)
+        click.echo(f"Check DEFAULT_TARGET_CONFIG_PATHS in mcpm/main.py or environment variables (e.g., {WINDSURF_CONFIG_ENV_VAR} for Windsurf).", err=True)
+        sys.exit(1)
+
+    confirmation_message = ""
+    if action == 'add':
+        confirmation_message = f"Proceed with adding/updating configuration for '{pkg_install_name}' in '{target_mcp_config_file_path}' (IDE: {target_ide})?"
+    elif action == 'remove':
+        confirmation_message = f"Proceed with removing configuration for '{pkg_install_name}' from '{target_mcp_config_file_path}' (IDE: {target_ide})?"
+
+    if not non_interactive: # Always confirm in interactive mode, or if not specified but not non_interactive
+        if not click.confirm(confirmation_message, default=True):
+            click.echo("Operation cancelled by user.")
+            return
+    elif non_interactive and not click.get_current_context().params.get('yes'): # For non-interactive, require --yes or similar if we add it
+        click.echo(f"Run with --yes or in interactive mode to confirm: {confirmation_message}")
+        # For now, non-interactive implies confirmation by providing all flags. A --yes flag would be better.
+        # Let's proceed if non_interactive, but a future --yes flag would be good.
+        pass 
+
+    if action == 'add':
+        click.echo(f"Attempting to 'add' configuration for '{pkg_install_name}' (key) to '{target_mcp_config_file_path}' for IDE '{target_ide}'.")
+        success = update_mcp_config_file_for_configure(
+            target_mcp_config_file_path,
+            pkg_install_name, 
+            config_snippet_obj,
+            pkg_install_path
+        )
+        if success:
+            click.echo(f"Configuration for '{pkg_install_name}' successfully added/updated for '{target_ide}'.")
+        else:
+            click.echo(f"Failed to add/update configuration for '{pkg_install_name}' for '{target_ide}'.", err=True)
+
+    elif action == 'remove':
+        click.echo(f"Attempting to 'remove' configuration for '{pkg_install_name}' (key) from '{target_mcp_config_file_path}' for IDE '{target_ide}'.")
+        success = remove_server_from_mcp_config(
+            target_mcp_config_file_path,
+            pkg_install_name 
+        )
+        if success:
+            click.echo(f"Configuration for '{pkg_install_name}' successfully removed for '{target_ide}'.")
+        else:
+            click.echo(f"Failed to remove configuration for '{pkg_install_name}' for '{target_ide}'. Check if it existed.", err=True)
+    else:
+        click.echo(f"Error: Unknown action '{action}'. Should have been caught earlier.", err=True)
+        sys.exit(1)
 
 if __name__ == '__main__':
     cli()
