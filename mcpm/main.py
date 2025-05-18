@@ -925,6 +925,7 @@ def list_items(non_interactive, search):
 
     # --- Interactive Mode Loop ---
     current_package_to_detail = None  # To track which package details to show
+    search_query = None  # Initialize search query outside the loop
 
     while True:
         # Clear screen for better UI
@@ -965,9 +966,6 @@ def list_items(non_interactive, search):
             elif result == 'details_refresh':
                 continue  # Show the same package details again
             
-        # Initialize search query
-        search_query = None
-        
         # Build the main package list
         choices = []
         if packages_data:
