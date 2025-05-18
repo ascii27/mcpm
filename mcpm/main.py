@@ -361,6 +361,125 @@ def _get_package_data_by_name(package_name, all_packages_data):
     return None
 
 
+def _configure_specific_package(package_name, package_path):
+    """Helper function to configure a specific package, skipping the package selection step.
+    
+    Args:
+        package_name: The name of the package to configure (install_name from DB).
+        package_path: The installation path of the package.
+    """
+    if not package_path:
+        click.echo(f"Error: Could not determine installation path for package '{package_name}'.", err=True)
+        return
+    
+    pkg_install_path = Path(package_path)
+    if not pkg_install_path.exists():
+        click.echo(f"Error: Package installation directory not found at {pkg_install_path}", err=True)
+        return
+    
+    # Load mcp_package.json to get available IDEs for selection
+    mcp_package_json_path = pkg_install_path / "mcp_package.json"
+    if not mcp_package_json_path.exists():
+        click.echo(f"Error: mcp_package.json not found at {mcp_package_json_path} for package '{package_name}'.", err=True)
+        return
+    
+    try:
+        with open(mcp_package_json_path, 'r') as f:
+            package_metadata = json.load(f)
+    except json.JSONDecodeError:
+        click.echo(f"Error: Could not parse {mcp_package_json_path}.", err=True)
+        return
+    except IOError as e:
+        click.echo(f"Error reading {mcp_package_json_path}: {e}", err=True)
+        return
+    
+    # Get available IDE configurations
+    ide_configs = package_metadata.get('ide_config_commands', {})
+    if not ide_configs:
+        click.echo(f"No IDE configurations found in {mcp_package_json_path} for package '{package_name}'.", err=True)
+        return
+    
+    available_ide_keys = list(ide_configs.keys())
+    if not available_ide_keys:
+        click.echo(f"No IDE keys found under 'ide_config_commands' in {mcp_package_json_path}.", err=True)
+        return
+    
+    # Let the user select the target IDE
+    target_ide = questionary.select(
+        f"Select target IDE to configure for package '{package_name}':",
+        choices=available_ide_keys
+    ).ask()
+    
+    if not target_ide:
+        click.echo("No target IDE selected. Exiting configuration.")
+        return
+    
+    # Let the user select the action
+    action = questionary.select(
+        "Select action to perform:",
+        choices=[
+            questionary.Choice("Add/Update configuration in IDE", "add"),
+            questionary.Choice("Remove configuration from IDE", "remove")
+        ]
+    ).ask()
+    
+    if not action:
+        click.echo("No action selected. Exiting configuration.")
+        return
+    
+    # Validate the IDE configuration
+    if target_ide not in ide_configs:
+        click.echo(f"Error: Target IDE '{target_ide}' not found in 'ide_config_commands'.", err=True)
+        return
+    
+    config_snippet_obj = ide_configs[target_ide]
+    if not isinstance(config_snippet_obj, dict):
+        click.echo(f"Error: Configuration snippet for '{target_ide}' is not a valid JSON object.", err=True)
+        return
+    
+    # Get the target IDE config path
+    target_mcp_config_file_path = get_target_config_path(target_ide)
+    if not target_mcp_config_file_path:
+        click.echo(f"Error: Could not determine the MCP configuration file path for target IDE '{target_ide}'.", err=True)
+        return
+    
+    # Confirm the action
+    confirmation_message = ""
+    if action == 'add':
+        confirmation_message = f"This will ADD/UPDATE the configuration for package '{package_name}' (IDE: {target_ide}) in the file: {target_mcp_config_file_path}."
+    elif action == 'remove':
+        confirmation_message = f"This will REMOVE the configuration for package '{package_name}' (IDE: {target_ide}) from the file: {target_mcp_config_file_path}."
+    
+    if not click.confirm(f"{confirmation_message}\nProceed?", default=True):
+        click.echo("Operation cancelled by user.")
+        return
+    
+    # Perform the action
+    if action == 'add':
+        click.echo(f"Adding/Updating configuration for '{package_name}' in '{target_mcp_config_file_path}' for IDE '{target_ide}'...")
+        success = update_mcp_config_file_for_configure(
+            config_path=target_mcp_config_file_path,
+            server_key_in_target=package_name,
+            config_snippet_obj=config_snippet_obj,
+            package_install_path=pkg_install_path
+        )
+        if success:
+            click.echo(f"Successfully ADDED/UPDATED configuration for '{package_name}' for IDE '{target_ide}'.")
+        else:
+            click.echo(f"FAILED to add/update configuration for '{package_name}' for IDE '{target_ide}'.", err=True)
+    
+    elif action == 'remove':
+        click.echo(f"Removing configuration for '{package_name}' from '{target_mcp_config_file_path}' for IDE '{target_ide}'...")
+        success = remove_server_from_mcp_config(
+            config_path=target_mcp_config_file_path,
+            server_short_name=package_name
+        )
+        if success:
+            click.echo(f"Successfully REMOVED configuration for '{package_name}' for IDE '{target_ide}'.")
+        else:
+            click.echo(f"FAILED to remove configuration for '{package_name}' for IDE '{target_ide}'.", err=True)
+
+
 def _display_package_details_interactive(package_name, all_packages_data, installed_packages_info, ctx):
     """Displays detailed information for a selected package and allows interactive
     management (install/uninstall, open URLs).
@@ -479,9 +598,9 @@ def _display_package_details_interactive(package_name, all_packages_data, instal
     elif selected_action == "configure":
         click.echo(f"Configuring package '{name}'...")
         try:
-            # Invoke the configure command in interactive mode
-            # This will let the user select the IDE and action (add/remove)
-            ctx.invoke(cli.commands['configure'], package_name=name, target_ide=None, action=None, non_interactive=False)
+            # Use the helper function to configure the specific package directly
+            # This skips the package selection step since we already know which package to configure
+            _configure_specific_package(name, installed_packages_info[name].get('path'))
             return 'details_refresh'  # Return to the details view after configuration
         except Exception as e:
             click.echo(click.style(f"Error during configuration: {e}", fg="red"))
