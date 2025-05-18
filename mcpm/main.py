@@ -833,7 +833,8 @@ def cli():
 
 @cli.command("list")
 @click.option('--non-interactive', is_flag=True, help="Run in non-interactive mode, just lists packages and servers.")
-def list_items(non_interactive):
+@click.option('--search', help="Search term to filter packages by name, description, or author.")
+def list_items(non_interactive, search):
     """Fetches and lists packages and servers from the registry.
     In interactive mode (default), shows package details and allows management.
     """
@@ -860,9 +861,27 @@ def list_items(non_interactive):
             for pkg_dict in installed_packages_list_of_dicts
         }
 
-        click.echo("\n--- Available Packages ---")
-        if packages_data:
+        # Filter packages if search term is provided
+        filtered_packages = []
+        if search:
+            search_lower = search.lower()
+            click.echo(f"\n--- Available Packages (filtered by '{search}') ---")
             for pkg in packages_data:
+                pkg_name = pkg.get("name", "")
+                pkg_description = pkg.get("description", "")
+                pkg_author = pkg.get("author", "")
+                
+                # Check if search term matches name, description, or author
+                if (search_lower in pkg_name.lower() or 
+                    search_lower in pkg_description.lower() or 
+                    search_lower in pkg_author.lower()):
+                    filtered_packages.append(pkg)
+        else:
+            click.echo("\n--- Available Packages ---")
+            filtered_packages = packages_data
+            
+        if filtered_packages:
+            for pkg in filtered_packages:
                 pkg_name = pkg.get("name")
                 pkg_version = pkg.get("version", "N/A")
                 pkg_description = pkg.get("description", "")
@@ -882,8 +901,14 @@ def list_items(non_interactive):
                     line_parts.append(f"(by {pkg_author})")
                 
                 click.echo(" ".join(line_parts))
+            
+            if search:
+                click.echo(f"\nFound {len(filtered_packages)} package(s) matching '{search}'.")
         else:
-            click.echo("No packages found in the registry or registry is unavailable.")
+            if search:
+                click.echo(f"No packages found matching '{search}'.")
+            else:
+                click.echo("No packages found in the registry or registry is unavailable.")
 
         click.echo("\n--- Registered MCP Servers ---")
         if servers_data:
@@ -940,11 +965,40 @@ def list_items(non_interactive):
             elif result == 'details_refresh':
                 continue  # Show the same package details again
             
+        # Add search option
+        search_query = None
+        if packages_data and len(packages_data) > 5:  # Only show search if there are enough packages
+            if questionary.confirm("Would you like to search for a package?", default=False).ask():
+                search_query = questionary.text("Enter search term (name, description, author):").ask()
+                if search_query:
+                    click.echo(f"Searching for packages matching '{search_query}'...")
+        
         # Build the main package list
         choices = []
         if packages_data:
             choices.append(questionary.Separator("-- Available Packages (Select for details) --"))
+            
+            # Filter packages based on search query if provided
+            displayed_packages = []
             for pkg_data in packages_data:
+                pkg_name = pkg_data.get("name", "")
+                pkg_description = pkg_data.get("description", "")
+                pkg_author = pkg_data.get("author", "")
+                
+                # If search query is provided, filter packages
+                if search_query:
+                    search_query_lower = search_query.lower()
+                    # Check if search query matches name, description, or author
+                    if (search_query_lower in pkg_name.lower() or 
+                        search_query_lower in pkg_description.lower() or 
+                        search_query_lower in pkg_author.lower()):
+                        displayed_packages.append(pkg_data)
+                else:
+                    # No search query, show all packages
+                    displayed_packages.append(pkg_data)
+            
+            # Display filtered packages
+            for pkg_data in displayed_packages:
                 pkg_name = pkg_data.get("name")
                 pkg_version = pkg_data.get("version", "N/A")
                 pkg_description = pkg_data.get("description", "")
@@ -978,22 +1032,44 @@ def list_items(non_interactive):
                 
                 # Add to choices - value is just the package name for details view
                 choices.append(questionary.Choice(title=title, value=pkg_name))
+                
+            # Show search results count if search was performed
+            if search_query and len(displayed_packages) == 0:
+                choices.append(questionary.Separator(f"-- No packages found matching '{search_query}' --"))
+            elif search_query:
+                choices.append(questionary.Separator(f"-- Found {len(displayed_packages)} package(s) matching '{search_query}' --"))
         
         # Add locally installed packages that aren't in the registry
         local_only_packages = []
         for pkg_dict in installed_packages_list_of_dicts:
             if not _get_package_data_by_name(pkg_dict['name'], packages_data):
                 local_only_packages.append(pkg_dict)
-                
-        if local_only_packages:
-            choices.append(questionary.Separator("-- Locally Installed Packages (Not in Registry) --"))
+        
+        # Filter local packages if search query is provided
+        filtered_local_packages = []
+        if search_query:
+            search_query_lower = search_query.lower()
             for pkg_dict in local_only_packages:
+                pkg_name = pkg_dict['name']
+                # For local packages, we can only search by name since we might not have description/author
+                if search_query_lower in pkg_name.lower():
+                    filtered_local_packages.append(pkg_dict)
+        else:
+            filtered_local_packages = local_only_packages
+                
+        if filtered_local_packages:
+            choices.append(questionary.Separator("-- Locally Installed Packages (Not in Registry) --"))
+            for pkg_dict in filtered_local_packages:
                 pkg_name = pkg_dict['name']
                 pkg_version = pkg_dict.get('version', 'N/A')
                 pkg_path = pkg_dict.get('install_path', 'N/A')
                 
                 title = f"[INSTALLED] {pkg_name} (v{pkg_version}) - Local only"
                 choices.append(questionary.Choice(title=title, value=pkg_name))
+            
+            # Show search results for local packages if search was performed
+            if search_query:
+                choices.append(questionary.Separator(f"-- Found {len(filtered_local_packages)} local package(s) matching '{search_query}' --"))
         
         if not choices:
             click.echo("No packages available in registry or installed locally.")
