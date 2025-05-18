@@ -91,7 +91,7 @@ def _display_package_details_interactive(package_name, all_packages_data, instal
             
             # Management options
             actions = [
-                questionary.Choice(title="📦 Uninstall this package", value="uninstall"),
+                questionary.Choice(title="✅ Uninstall this package", value="uninstall"),
                 questionary.Choice(title="⚙️  Configure for IDE", value="configure"),
                 questionary.Choice(title="⬅️  Back to list", value="back"),
                 questionary.Choice(title="❌ Exit", value="exit")
@@ -168,10 +168,10 @@ def _display_package_details_interactive(package_name, all_packages_data, instal
     actions = []
     
     if is_installed:
-        actions.append(questionary.Choice(title="📦 Uninstall this package", value="uninstall"))
+        actions.append(questionary.Choice(title="✅ Uninstall this package", value="uninstall"))
         actions.append(questionary.Choice(title="⚙️  Configure for IDE", value="configure"))
     else:
-        actions.append(questionary.Choice(title="📦 Install this package", value="install"))
+        actions.append(questionary.Choice(title="✅ Install this package", value="install"))
     
     if pkg_source_url:
         actions.append(questionary.Choice(title="🔗 Open source URL", value="source_url"))
