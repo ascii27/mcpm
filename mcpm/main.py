@@ -887,11 +887,19 @@ def list_items(non_interactive, search):
                 pkg_description = pkg.get("description", "")
                 pkg_author = pkg.get("author", "")
 
-                line_parts = [f"- {pkg_name} (v{pkg_version})"]
-
+                # Use a styled green checkmark icon to indicate installation status
+                if pkg_name in installed_packages_info:
+                    install_prefix = click.style("✓ ", fg="green", bold=True)
+                else:
+                    install_prefix = "- "
+                
+                line_parts = [f"{install_prefix}{pkg_name} (v{pkg_version})"]
+                
+                # Add installed version if different from registry version
                 if pkg_name in installed_packages_info:
                     installed_version = installed_packages_info[pkg_name].get('version', 'N/A')
-                    line_parts.append(f"[INSTALLED v{installed_version}]")
+                    if installed_version != pkg_version:
+                        line_parts.append(f"[v{installed_version} installed]")
                 
                 if pkg_description:
                     desc_display = pkg_description[:80] + ('...' if len(pkg_description) > 80 else '')
@@ -915,10 +923,23 @@ def list_items(non_interactive, search):
             for server in servers_data:
                 server_reg_name = server.get('registry_name', 'Unknown Server Name')
                 description = server.get('description', 'No description')
-                install_status = ""
-                if server_reg_name in installed_packages_info: # Assuming server_reg_name can be an install_name
-                     install_status = f"[CONFIGURED/INSTALLED v{installed_packages_info[server_reg_name].get('version', 'N/A')}]" 
-                click.echo(f"- {server_reg_name}: {description} {install_status}")
+                
+                # Use a styled green checkmark icon to indicate if the server is installed/configured
+                is_installed = server_reg_name in installed_packages_info
+                if is_installed:
+                    install_prefix = click.style("✓ ", fg="green", bold=True)
+                else:
+                    install_prefix = "- "
+                
+                # Build display parts
+                display_parts = [f"{install_prefix}{server_reg_name}: {description}"]
+                
+                # Add version info if installed
+                if is_installed:
+                    installed_version = installed_packages_info[server_reg_name].get('version', 'N/A')
+                    display_parts.append(f"(v{installed_version})")
+                    
+                click.echo(" ".join(display_parts))
         else:
             click.echo("No MCP servers found in the registry or registry is unavailable.")
         return
@@ -999,14 +1020,18 @@ def list_items(non_interactive, search):
                 
                 # Check if installed
                 is_installed = pkg_name in installed_packages_info
-                status_marker = "[INSTALLED] " if is_installed else ""
                 
                 # Use installed version if available
                 display_version = installed_packages_info[pkg_name].get('version', pkg_version) if is_installed else pkg_version
                 
-                # Build title parts
+                # Build title parts with styled green checkmark icon for installation status
+                if is_installed:
+                    status_icon = click.style("✓ ", fg="green", bold=True)
+                else:
+                    status_icon = "  "
+                
                 title_parts = [
-                    status_marker,
+                    status_icon,
                     pkg_name,
                     f"(v{display_version})"
                 ]
@@ -1057,7 +1082,7 @@ def list_items(non_interactive, search):
                 pkg_version = pkg_dict.get('version', 'N/A')
                 pkg_path = pkg_dict.get('install_path', 'N/A')
                 
-                title = f"[INSTALLED] {pkg_name} (v{pkg_version}) - Local only"
+                title = f"{click.style('✓ ', fg='green', bold=True)}{pkg_name} (v{pkg_version}) - Local only"
                 choices.append(questionary.Choice(title=title, value=pkg_name))
             
             # Show search results for local packages if search was performed
